@@ -42,7 +42,7 @@
     "baseline_ref": "references/qwen-code-baseline.json",
     "version_ref": "build/version.json",
     "tested_version": "0.21.0",
-    "npm_package": "@qwen-code/qwen-code",
+    "package": "@qwen-code/qwen-code",
     "release_tag": "v0.21.0",
     "documentation": [
       "docs/users/configuration/settings.md",
@@ -56,7 +56,7 @@
     "direct_command": "QWEN_HOME=<absolute-target> QWEN_RUNTIME_DIR=<absolute-target>/runtime <absolute-target>/bin/qwen [args...]",
     "home_environment_variable": "QWEN_HOME",
     "runtime_environment_variable": "QWEN_RUNTIME_DIR",
-    "executable_source": "validated-target-owned-npm-install",
+    "executable_source": "validated-target-owned-official-standalone-install",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
@@ -65,6 +65,7 @@
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
+    "path_inherited": false,
     "target_must_equal_qwen_home": true
   },
   "backup_policy": {
@@ -117,16 +118,28 @@
     "tested_version": "0.21.0",
     "node_requires": ">=22.0.0",
     "supported_platforms": ["macos", "linux"],
-    "npm": {
-      "package": "@qwen-code/qwen-code",
-      "version": "0.21.0",
-      "binary": "qwen",
-      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz"
+    "installer": {
+      "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+      "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
+      "argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
+      "environment": "minimal-allowlist-target-owned-qwen-install-root",
+      "archive_verification": "official SHA256SUMS"
+    },
+    "preconditions": {
+      "install": "absent target-owned Qwen Code software surface",
+      "update": "installed or safe partial target-owned Qwen Code software surface",
+      "partial_state_policy": "install rejects any replace path or owned software parent; update may repair safe partial state",
+      "preflight": "existing replace paths and software parent directories are validated before installer download"
+    },
+    "bounds": {
+      "max_tree_paths": 100000,
+      "max_tree_bytes": 1073741824
     },
     "layout": {
       "visible_command": "bin/qwen",
-      "package_root": "packages/npm/node_modules/@qwen-code/qwen-code",
-      "package_manifest": "packages/npm/node_modules/@qwen-code/qwen-code/package.json",
+      "install_root": "lib/qwen-code",
+      "package_manifest": "lib/qwen-code/package.json",
+      "software_manifest": "software/qwen-code.json",
       "runtime_dir": "runtime"
     },
     "commands": {

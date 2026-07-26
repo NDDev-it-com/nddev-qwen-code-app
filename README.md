@@ -5,8 +5,8 @@ Code home. It installs one of several complete setup variants into an explicit
 absolute target and preserves unrelated authentication, model-provider, MCP, and
 runtime state.
 
-This build targets the canonical Qwen Code CLI from `QwenLM/qwen-code`, npm
-package `@qwen-code/qwen-code`, binary `qwen`, version `0.21.0`.
+This build targets the canonical Qwen Code CLI from `QwenLM/qwen-code`, package
+identity `@qwen-code/qwen-code`, binary `qwen`, version `0.21.0`.
 
 ## Owned state
 
@@ -83,11 +83,21 @@ python3 cli-tools/nddev_qwen_code.py launch \
   --target /absolute/path/to/qwen-home -- --version
 ```
 
-`install-cli` and `update-cli` use npm to install
-`@qwen-code/qwen-code@0.21.0` below the explicit target, then validate the
-target-owned `bin/qwen`. Launch never resolves `qwen` from ambient `PATH`; it
-executes `<target>/bin/qwen` with `QWEN_HOME`, `QWEN_RUNTIME_DIR`, `HOME`, and
-`USERPROFILE` bound to the selected target.
+`install-cli` downloads the pinned official standalone installer, verifies its
+SHA-256, and invokes it with `--method standalone --version 0.21.0
+--no-modify-path` inside a same-parent staging directory with isolated
+`QWEN_INSTALL_ROOT`, `HOME`, and XDG directories. The installer performs the
+official `SHA256SUMS` archive verification. The manager then writes a
+deterministic software manifest and atomically swaps only target-owned
+`bin/qwen`, `lib/qwen-code`, and `software/qwen-code.json`.
+
+`install-cli` only accepts an absent software surface. Existing or safe partial
+software state must use `update-cli`; unsafe existing paths fail before the
+installer is downloaded. `software-status` validates the manifest and bounded
+tree digest without executing `bin/qwen`. Launch never resolves `qwen` from
+ambient `PATH`; it executes `<target>/bin/qwen` with target-owned
+`QWEN_HOME`, `QWEN_RUNTIME_DIR`, `HOME`, `USERPROFILE`, XDG, and temp
+directories.
 
 ## Public/private boundary
 

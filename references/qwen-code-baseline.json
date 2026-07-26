@@ -6,14 +6,23 @@
     "published_at": "2026-07-24T13:32:48Z",
     "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.0"
   },
-  "npm": {
-    "package": "@qwen-code/qwen-code",
+  "package": {
+    "name": "@qwen-code/qwen-code",
     "version": "0.21.0",
     "binary": "qwen",
-    "node_requires": ">=22.0.0",
-    "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz",
-    "shasum": "0c34828a81a068ecc07be92c611ae30a644f9bc5",
-    "integrity": "sha512-h4t8crH1WTKS4I3uolOQGTzvGu7iW9DuqIegaq+v8yRXTyTkNV7k74AARHPWYh5DJL1ZY/ZCDsOuPsNhaLlnog=="
+    "node_requires": ">=22.0.0"
+  },
+  "standalone_installer": {
+    "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+    "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
+    "argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
+    "archive_verification": "official SHA256SUMS"
+  },
+  "standalone_archives": {
+    "darwin-arm64": "5974be1e68db8497036071ad2826d85c324c879f096c62f2344c7d3d1c1a48ec",
+    "darwin-x64": "0edd28c694afd81af15c453667c704ea122564093856b4c3241f66e5a921f119",
+    "linux-arm64": "9d5eb139dc5e5bc630da8e719c6e0ae5bc212b4e0b6b9d77e87662b83682a5eb",
+    "linux-x64": "bf0fa824336dea986a5955e1dca00bde8b24be8c9d36c8b3b82cee69ce6cccc8"
   },
   "configuration": {
     "home_environment_variable": "QWEN_HOME",

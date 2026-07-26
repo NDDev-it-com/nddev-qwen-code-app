@@ -6,10 +6,10 @@
   "qwen_code_tested": "0.21.0",
   "qwen_code_release_tag": "v0.21.0",
   "qwen_code_release_published_at": "2026-07-24T13:32:48Z",
-  "npm_package": "@qwen-code/qwen-code",
-  "npm_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz",
-  "npm_shasum": "0c34828a81a068ecc07be92c611ae30a644f9bc5",
-  "npm_integrity": "sha512-h4t8crH1WTKS4I3uolOQGTzvGu7iW9DuqIegaq+v8yRXTyTkNV7k74AARHPWYh5DJL1ZY/ZCDsOuPsNhaLlnog==",
+  "qwen_code_package": "@qwen-code/qwen-code",
+  "standalone_installer_url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+  "standalone_installer_sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
+  "standalone_archive_verification": "official SHA256SUMS",
   "nddev_builder_extension_version": "0.1.0",
   "runtime_baseline_ref": "references/qwen-code-baseline.json"
 }

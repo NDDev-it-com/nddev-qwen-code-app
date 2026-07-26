@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,9 +44,37 @@ MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 PROCESS_OUTPUT_MAX_BYTES = 256 * 1024
 PROCESS_TIMEOUT_SECONDS = 120
 TESTED_QWEN_CODE_VERSION = "0.21.0"
-NPM_PACKAGE = "@qwen-code/qwen-code"
-NPM_SPEC = f"{NPM_PACKAGE}@{TESTED_QWEN_CODE_VERSION}"
+QWEN_CODE_PACKAGE = "@qwen-code/qwen-code"
+QWEN_COMMAND = "qwen"
+INSTALLER_URL = (
+    "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/"
+    "install-qwen-standalone.sh"
+)
+INSTALLER_SHA256 = "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638"
+INSTALLER_ARGV = (
+    "--method",
+    "standalone",
+    "--version",
+    TESTED_QWEN_CODE_VERSION,
+    "--no-modify-path",
+)
 CONTROLLED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+INSTALLER_MAX_BYTES = 1024 * 1024
+SOFTWARE_TREE_MAX_BYTES = 1024 * 1024 * 1024
+SOFTWARE_TREE_MAX_PATHS = 100000
+SOFTWARE_DIR_RELATIVE = Path("lib") / "qwen-code"
+SOFTWARE_MANIFEST_RELATIVE = Path("software") / "qwen-code.json"
+SOFTWARE_REPLACE_PATHS = (
+    Path("bin") / QWEN_COMMAND,
+    SOFTWARE_DIR_RELATIVE,
+    SOFTWARE_MANIFEST_RELATIVE,
+)
+SOFTWARE_PARENT_PATHS = tuple(
+    sorted(
+        {relative.parent for relative in SOFTWARE_REPLACE_PATHS if relative.parent != Path(".")},
+        key=str,
+    )
+)
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 SEMVER_PATTERN = re.compile(
@@ -81,6 +111,29 @@ PRESERVED_SETTINGS_KEYS = (
     "telemetry",
     "proxy",
     "plansDirectory",
+)
+FORBIDDEN_CHILD_ENV_NAMES = {
+    "ALIBABA_CLOUD_ACCESS_KEY_ID",
+    "ALIBABA_CLOUD_ACCESS_KEY_SECRET",
+    "ANTHROPIC_API_KEY",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "BUN_AUTH_TOKEN",
+    "DASHSCOPE_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "NODE_AUTH_TOKEN",
+    "NPM_TOKEN",
+    "OPENAI_API_KEY",
+    "QWEN_API_KEY",
+    "QWEN_AUTH_TOKEN",
+    "SSH_ASKPASS",
+    "SSH_AUTH_SOCK",
+}
+FORBIDDEN_CHILD_ENV_PREFIXES = (
+    "BUN_CONFIG_",
+    "npm_config_",
 )
 
 
@@ -411,6 +464,20 @@ def ensure_private_directory(path: Path, *, create: bool) -> bool:
         return True
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail(f"{path} must be a real directory")
+    return True
+
+
+def require_private_target_directory_for_software(target: Path, *, allow_missing: bool) -> bool:
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        if allow_missing:
+            return False
+        fail("software target is missing")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail("software target must be a real directory")
+    if not is_owner_private_directory(info):
+        fail("software target must be private to the current user with mode 0700")
     return True
 
 
@@ -1074,114 +1141,567 @@ def remove_setup(target: Path) -> dict[str, Any]:
     }
 
 
-def validate_qwen_executable(path: Path) -> None:
-    info = require_regular_file(path, "Qwen Code executable")
+def qwen_executable(target: Path) -> Path:
+    return target / "bin" / QWEN_COMMAND
+
+
+def software_manifest_path(target: Path) -> Path:
+    return target / SOFTWARE_MANIFEST_RELATIVE
+
+
+def require_safe_executable(path: Path, root: Path, label: str) -> os.stat_result:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        fail(f"{label} is missing")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"{label} must be a regular non-symlink file")
+    if info.st_nlink != 1:
+        fail(f"{label} must not have hard-link aliases")
     if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
-        fail("Qwen Code executable must be owned by the current user")
-    mode = stat.S_IMODE(info.st_mode)
-    if not mode & stat.S_IXUSR:
-        fail("Qwen Code executable must be executable by its owner")
-    if mode & 0o022:
-        fail("Qwen Code executable must not be writable by group or others")
+        fail(f"{label} must be owned by the current user")
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        fail(f"{label} must be private to the current user with mode 0700")
+    try:
+        path.resolve(strict=True).relative_to(root.resolve())
+    except ValueError:
+        fail(f"{label} must stay inside the target")
+    return info
 
 
-def bounded_qwen_version(executable: Path, target: Path) -> str:
-    env = {
-        "QWEN_HOME": str(target),
-        "QWEN_RUNTIME_DIR": str(target / "runtime"),
-        "HOME": str(target),
-        "USERPROFILE": str(target),
-        "PATH": CONTROLLED_PATH,
-        "LANG": "C",
-        "LC_ALL": "C",
-    }
-    completed = subprocess.run(
+def chmod_private_tree(root: Path) -> None:
+    for path in sorted(root.rglob("*"), key=lambda item: len(item.parts)):
+        if path.is_symlink():
+            continue
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            path.chmod(OWNER_DIRECTORY_MODE)
+        elif stat.S_ISREG(info.st_mode):
+            if stat.S_IMODE(info.st_mode) & stat.S_IXUSR:
+                path.chmod(0o700)
+            else:
+                path.chmod(OWNER_FILE_MODE)
+
+
+def safe_child_base_environment(*, include_path: bool) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if include_path:
+        env["PATH"] = os.environ.get("PATH", CONTROLLED_PATH)
+    for name in ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR"):
+        value = os.environ.get(name)
+        if value:
+            env[name] = value
+    return env
+
+
+def install_stage_environment(stage_root: Path, live_stage: Path) -> dict[str, str]:
+    home = stage_root / "home"
+    tmp = stage_root / "tmp"
+    xdg_config = stage_root / "xdg-config"
+    xdg_cache = stage_root / "xdg-cache"
+    xdg_state = stage_root / "xdg-state"
+    qwen_home = stage_root / "qwen-home"
+    qwen_runtime = stage_root / "qwen-runtime"
+    for directory in (home, tmp, xdg_config, xdg_cache, xdg_state, qwen_home, qwen_runtime):
+        directory.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+        directory.chmod(OWNER_DIRECTORY_MODE)
+    env = safe_child_base_environment(include_path=True)
+    env.update(
+        {
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "TMPDIR": str(tmp),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "XDG_CACHE_HOME": str(xdg_cache),
+            "XDG_STATE_HOME": str(xdg_state),
+            "QWEN_HOME": str(qwen_home),
+            "QWEN_RUNTIME_DIR": str(qwen_runtime),
+            "QWEN_INSTALL_ROOT": str(live_stage),
+        }
+    )
+    return env
+
+
+def launch_environment(target: Path) -> dict[str, str]:
+    runtime = target / "runtime"
+    tmp = runtime / "tmp"
+    xdg_config = runtime / "xdg-config"
+    xdg_cache = runtime / "xdg-cache"
+    xdg_state = runtime / "xdg-state"
+    for directory in (runtime, tmp, xdg_config, xdg_cache, xdg_state):
+        directory.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+        directory.chmod(OWNER_DIRECTORY_MODE)
+    env = safe_child_base_environment(include_path=False)
+    env.update(
+        {
+            "HOME": str(target),
+            "USERPROFILE": str(target),
+            "QWEN_HOME": str(target),
+            "QWEN_RUNTIME_DIR": str(runtime),
+            "TMPDIR": str(tmp),
+            "XDG_CONFIG_HOME": str(xdg_config),
+            "XDG_CACHE_HOME": str(xdg_cache),
+            "XDG_STATE_HOME": str(xdg_state),
+        }
+    )
+    return env
+
+
+def download_bytes(url: str, *, max_bytes: int) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": f"{PRODUCT_NAME}/{VERSION}"})
+    try:
+        with urllib.request.urlopen(request, timeout=PROCESS_TIMEOUT_SECONDS) as response:
+            length_header = response.headers.get("Content-Length")
+            expected_length: int | None = None
+            if length_header:
+                try:
+                    expected_length = int(length_header)
+                except ValueError:
+                    fail(f"download from {url} returned an invalid Content-Length")
+                if expected_length < 0:
+                    fail(f"download from {url} returned an invalid Content-Length")
+                if expected_length > max_bytes:
+                    fail(f"download from {url} declared {expected_length} bytes over the limit")
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    fail(f"download from {url} exceeded {max_bytes} bytes")
+                chunks.append(chunk)
+            if expected_length is not None and total != expected_length:
+                fail(
+                    f"download from {url} ended at {total} bytes, "
+                    f"expected {expected_length} from Content-Length"
+                )
+    except (urllib.error.URLError, TimeoutError) as exc:
+        fail(f"failed to download official Qwen Code installer: {exc}")
+    return b"".join(chunks)
+
+
+def download_official_installer(stage_root: Path) -> Path:
+    content = download_bytes(INSTALLER_URL, max_bytes=INSTALLER_MAX_BYTES)
+    digest = sha256_bytes(content)
+    if digest != INSTALLER_SHA256:
+        fail("official Qwen Code installer SHA-256 mismatch")
+    installer = stage_root / "install-qwen-standalone.sh"
+    installer.write_bytes(content)
+    installer.chmod(0o700)
+    return installer
+
+
+def observed_qwen_version(executable: Path, target: Path) -> str:
+    require_safe_executable(executable, target, "staged Qwen Code executable")
+    completed = bounded_process(
         [str(executable), "--version"],
         cwd=target,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        capture_output=True,
-        check=False,
+        env=launch_environment(target),
         timeout=20,
     )
     if completed.returncode != 0:
-        fail(f"Qwen Code version check failed with exit {completed.returncode}")
-    if (
-        len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES
-        or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES
-    ):
-        fail("Qwen Code version output exceeded its size limit")
-    text = completed.stdout.strip()
-    match = re.fullmatch(r"(?:qwen(?:-code)?\s+)?([0-9][0-9A-Za-z.+-]*)", text)
+        fail(f"Qwen Code version smoke failed with exit {completed.returncode}")
+    text = "\n".join((completed.stdout, completed.stderr)).strip()
+    match = re.search(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?![0-9])", text)
     if match is None or SEMVER_PATTERN.fullmatch(match.group(1)) is None:
         fail(f"Qwen Code returned an invalid version string: {text!r}")
     return match.group(1)
 
 
-def inspect_software_installation(target: Path) -> dict[str, Any] | None:
-    executable = target / "bin" / "qwen"
-    package_root = target / "packages" / "npm" / "node_modules" / "@qwen-code" / "qwen-code"
-    package_json = package_root / "package.json"
-    present = [path_exists_no_follow(path) for path in (executable, package_json)]
-    if not any(present):
-        return None
-    if not all(present):
-        fail("Qwen Code target-owned installation is incomplete")
-    validate_qwen_executable(executable)
-    package = load_json_object(package_json, "Qwen Code package metadata")
-    if package.get("name") != NPM_PACKAGE:
+def package_metadata(root: Path) -> dict[str, Any]:
+    metadata = load_json_object(root / SOFTWARE_DIR_RELATIVE / "package.json", "Qwen Code package")
+    if metadata.get("name") != QWEN_CODE_PACKAGE:
         fail("Qwen Code package identity is invalid")
-    version = package.get("version")
+    version = metadata.get("version")
     if not isinstance(version, str) or SEMVER_PATTERN.fullmatch(version) is None:
         fail("Qwen Code package version is invalid")
-    binary = package.get("bin")
-    if not isinstance(binary, dict) or binary.get("qwen") != "cli-entry.js":
-        fail("Qwen Code package binary metadata is invalid")
-    actual = bounded_qwen_version(executable, target)
-    if actual != version:
-        fail("Qwen Code package metadata and executable versions disagree")
-    return {"version": actual, "executable": str(executable)}
+    return metadata
 
 
-def require_current_software(target: Path) -> dict[str, Any]:
-    installation = inspect_software_installation(target)
-    if installation is None:
-        fail("Qwen Code CLI is not installed at the selected target; run install-cli")
-    if installation["version"] != TESTED_QWEN_CODE_VERSION:
-        fail(
-            f"Qwen Code CLI {installation['version']} is not current; "
-            f"run update-cli to install {TESTED_QWEN_CODE_VERSION}"
+def digest_regular_file(
+    path: Path,
+    label: str,
+    byte_counter: dict[str, int],
+) -> str:
+    before = path.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        fail(f"{label} must be a regular file")
+    if before.st_nlink != 1:
+        fail(f"{label} must not have hard-link aliases")
+    if hasattr(os, "geteuid") and owner_of(before) != os.geteuid():
+        fail(f"{label} must be owned by the current user")
+    mode = stat.S_IMODE(before.st_mode)
+    if mode not in {OWNER_FILE_MODE, 0o700}:
+        fail(f"{label} must be private to the current user")
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags)
+    digest = hashlib.sha256()
+    try:
+        opened = os.fstat(descriptor)
+        if identity_of(opened) != identity_of(before):
+            fail_concurrent(f"{label} changed while it was being opened")
+        if hasattr(os, "geteuid") and owner_of(opened) != os.geteuid():
+            fail(f"{label} must be owned by the current user")
+        while True:
+            chunk = os.read(descriptor, 65536)
+            if not chunk:
+                break
+            byte_counter["value"] += len(chunk)
+            if byte_counter["value"] > SOFTWARE_TREE_MAX_BYTES:
+                fail(f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_BYTES}-byte limit")
+            digest.update(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    final = path.lstat()
+    expected = identity_of(before)
+    if (
+        identity_of(opened) != expected
+        or identity_of(after) != expected
+        or identity_of(final) != expected
+    ):
+        fail_concurrent(f"{label} changed while it was being read")
+    return digest.hexdigest()
+
+
+def iter_software_tree_paths(root: Path) -> list[Path]:
+    paths = [Path("bin") / QWEN_COMMAND, SOFTWARE_DIR_RELATIVE]
+    install_root = root / SOFTWARE_DIR_RELATIVE
+    if install_root.exists() or install_root.is_symlink():
+        for path in install_root.rglob("*"):
+            paths.append(path.relative_to(root))
+            if len(paths) > SOFTWARE_TREE_MAX_PATHS:
+                fail(f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit")
+    return sorted(set(paths), key=lambda item: str(item))
+
+
+def resolve_target_owned_symlink(path: Path, root: Path, label: str) -> Path:
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        fail(f"{label} symlink is broken")
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError:
+        fail(f"{label} symlink must stay inside the target")
+    return resolved
+
+
+def digest_resolved_symlink_tree(
+    path: Path,
+    root: Path,
+    label: str,
+    byte_counter: dict[str, int],
+    path_counter: dict[str, int],
+    seen_directories: set[tuple[int, int]],
+) -> dict[str, Any]:
+    if path_counter["value"] > SOFTWARE_TREE_MAX_PATHS:
+        fail(f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit")
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        fail(f"{label} is missing")
+    mode = stat.S_IMODE(info.st_mode)
+    if stat.S_ISLNK(info.st_mode):
+        resolved = resolve_target_owned_symlink(path, root, label)
+        nested = digest_resolved_symlink_tree(
+            resolved,
+            root,
+            f"{label} resolved target",
+            byte_counter,
+            path_counter,
+            seen_directories,
         )
-    return installation
+        return {
+            "type": "symlink",
+            "target": os.readlink(path),
+            "resolved": str(resolved.relative_to(root)),
+            "resolved_target": nested,
+        }
+    if stat.S_ISREG(info.st_mode):
+        return {
+            "type": "file",
+            "mode": mode,
+            "size": info.st_size,
+            "sha256": digest_regular_file(path, label, byte_counter),
+            "owner_executable": bool(mode & stat.S_IXUSR),
+        }
+    if stat.S_ISDIR(info.st_mode):
+        if not is_owner_private_directory(info):
+            fail(f"{label} directory must be private to the current user")
+        directory_identity = identity_of(info)
+        if directory_identity in seen_directories:
+            fail(f"{label} resolves to a directory cycle")
+        seen_directories.add(directory_identity)
+        children: list[dict[str, Any]] = []
+        try:
+            entries = sorted(path.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            fail(f"cannot enumerate {label}: {exc}")
+        for child in entries:
+            path_counter["value"] += 1
+            if path_counter["value"] > SOFTWARE_TREE_MAX_PATHS:
+                fail(
+                    f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit"
+                )
+            children.append(
+                {
+                    "name": child.name,
+                    **digest_resolved_symlink_tree(
+                        child,
+                        root,
+                        f"{label}/{child.name}",
+                        byte_counter,
+                        path_counter,
+                        seen_directories,
+                    ),
+                }
+            )
+        seen_directories.remove(directory_identity)
+        return {
+            "type": "directory",
+            "mode": mode,
+            "tree_digest": sha256_bytes(canonical_json(children)),
+            "tree_paths": len(children),
+        }
+    fail(f"{label} resolved target has an unsupported file type")
+
+
+def validate_software_symlink(
+    path: Path,
+    root: Path,
+    label: str,
+    byte_counter: dict[str, int],
+) -> dict[str, Any]:
+    resolved = resolve_target_owned_symlink(path, root, label)
+    path_counter = {"value": 1}
+    target_record = digest_resolved_symlink_tree(
+        resolved,
+        root,
+        f"{label} resolved target",
+        byte_counter,
+        path_counter,
+        set(),
+    )
+    return {
+        "path": str(path.relative_to(root)),
+        "type": "symlink",
+        "target": os.readlink(path),
+        "resolved": str(resolved.relative_to(root)),
+        "resolved_target": target_record,
+        "resolved_tree_paths": path_counter["value"],
+    }
+
+
+def compute_software_tree_digest(root: Path) -> dict[str, Any]:
+    root = root.resolve()
+    byte_counter = {"value": 0}
+    records: list[dict[str, Any]] = []
+    for relative in iter_software_tree_paths(root):
+        if len(records) >= SOFTWARE_TREE_MAX_PATHS:
+            fail(f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit")
+        path = root / relative
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            fail(f"installed software path {relative} is missing")
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISDIR(info.st_mode):
+            if not is_owner_private_directory(info):
+                fail(f"installed software directory {relative} must be private to the current user")
+            records.append({"path": str(relative), "type": "directory", "mode": mode})
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            records.append(
+                validate_software_symlink(
+                    path,
+                    root,
+                    f"installed software path {relative}",
+                    byte_counter,
+                )
+            )
+            continue
+        digest = digest_regular_file(path, f"installed software file {relative}", byte_counter)
+        records.append(
+            {
+                "path": str(relative),
+                "type": "file",
+                "mode": mode,
+                "size": info.st_size,
+                "sha256": digest,
+                "owner_executable": bool(mode & stat.S_IXUSR),
+            }
+        )
+    require_safe_executable(root / "bin" / QWEN_COMMAND, root, "Qwen Code executable")
+    metadata = package_metadata(root)
+    return {
+        "tree_digest": sha256_bytes(canonical_json(records)),
+        "tree_bytes": byte_counter["value"],
+        "tree_paths": len(records),
+        "package_name": metadata["name"],
+        "version": metadata["version"],
+        "entrypoint_sha256": digest_regular_file(
+            root / "bin" / QWEN_COMMAND,
+            "Qwen Code executable",
+            {"value": 0},
+        ),
+        "package_manifest_sha256": digest_regular_file(
+            root / SOFTWARE_DIR_RELATIVE / "package.json",
+            "Qwen Code package manifest",
+            {"value": 0},
+        ),
+    }
+
+
+def software_manifest_identity() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "product_name": PRODUCT_NAME,
+        "package": QWEN_CODE_PACKAGE,
+        "install_method": "official-standalone",
+        "installer_url": INSTALLER_URL,
+        "installer_sha256": INSTALLER_SHA256,
+        "installer_argv": list(INSTALLER_ARGV),
+        "archive_verification": "official SHA256SUMS",
+        "executable": f"bin/{QWEN_COMMAND}",
+        "install_root": str(SOFTWARE_DIR_RELATIVE),
+    }
+
+
+def build_software_manifest(root: Path) -> dict[str, Any]:
+    return {**software_manifest_identity(), **compute_software_tree_digest(root)}
+
+
+def software_presence(target: Path) -> dict[str, Any]:
+    replace_paths_present = [
+        str(relative) for relative in SOFTWARE_REPLACE_PATHS if path_exists_no_follow(target / relative)
+    ]
+    owned_parent_paths_present = [
+        str(relative) for relative in SOFTWARE_PARENT_PATHS if path_exists_no_follow(target / relative)
+    ]
+    if not replace_paths_present and not owned_parent_paths_present:
+        state = "absent"
+    elif len(replace_paths_present) == len(SOFTWARE_REPLACE_PATHS):
+        state = "installed"
+    else:
+        state = "partial"
+    return {
+        "software_state": state,
+        "partial": state == "partial",
+        "replace_paths_present": replace_paths_present,
+        "owned_parent_paths_present": owned_parent_paths_present,
+    }
 
 
 def software_status(target: Path) -> dict[str, Any]:
-    installation = inspect_software_installation(target)
-    return {
+    if not require_private_target_directory_for_software(target, allow_missing=True):
+        return {
+            "schema_version": 1,
+            "command": "software-status",
+            "target": str(target),
+            "installed": False,
+            "current": False,
+            "version": None,
+            "executable": None,
+            "software_state": "absent",
+            "partial": False,
+            "replace_paths_present": [],
+            "owned_parent_paths_present": [],
+        }
+    presence = software_presence(target)
+    executable = qwen_executable(target)
+    if presence["software_state"] != "installed":
+        return {
+            "schema_version": 1,
+            "command": "software-status",
+            "target": str(target),
+            "installed": False,
+            "current": False,
+            "version": None,
+            "executable": str(executable),
+            **presence,
+        }
+    manifest_path = software_manifest_path(target)
+    try:
+        manifest = load_json_object(manifest_path, "Qwen Code software manifest", owner_only=True)
+    except QwenCodeSetupError as exc:
+        return {
+            "schema_version": 1,
+            "command": "software-status",
+            "target": str(target),
+            "installed": True,
+            "current": False,
+            "version": None,
+            "executable": str(executable),
+            **presence,
+            "validation_error": str(exc),
+        }
+    try:
+        expected = build_software_manifest(target)
+    except QwenCodeSetupError as exc:
+        expected = None
+        validation_error = str(exc)
+    else:
+        validation_error = None
+    current = (
+        expected is not None
+        and manifest == expected
+        and manifest.get("version") == TESTED_QWEN_CODE_VERSION
+    )
+    result = {
         "schema_version": 1,
         "command": "software-status",
         "target": str(target),
-        "installed": installation is not None,
-        "current": installation is not None and installation["version"] == TESTED_QWEN_CODE_VERSION,
-        "version": installation["version"] if installation else None,
-        "executable": installation["executable"] if installation else None,
+        "installed": True,
+        "current": current,
+        "version": manifest.get("version"),
+        "executable": str(executable),
+        "package": manifest.get("package"),
+        "install_method": manifest.get("install_method"),
+        **presence,
     }
+    if validation_error is not None:
+        result["validation_error"] = validation_error
+    return result
+
+
+def require_current_software(target: Path) -> dict[str, Any]:
+    status = software_status(target)
+    if not status["installed"]:
+        fail("Qwen Code CLI is not installed at the selected target; run install-cli")
+    if not status["current"]:
+        detail = f": {status['validation_error']}" if "validation_error" in status else ""
+        fail(
+            f"Qwen Code CLI is not current at the selected target; "
+            f"run update-cli to install {TESTED_QWEN_CODE_VERSION}{detail}"
+        )
+    return status
 
 
 def bounded_process(
     command: list[str], *, cwd: Path, env: dict[str, str], timeout: int
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        fail(f"process executable not found: {command[0]}")
+    except subprocess.TimeoutExpired:
+        fail(f"process timed out after {timeout} seconds: {command[0]}")
     if (
         len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES
         or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES
@@ -1190,62 +1710,278 @@ def bounded_process(
     return completed
 
 
-def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
-    before = inspect_software_installation(target)
-    if before is not None and before["version"] == TESTED_QWEN_CODE_VERSION:
-        return {
-            "schema_version": 1,
-            "command": command,
-            "target": str(target),
-            "changed": False,
-            "version": before["version"],
-            "executable": before["executable"],
-        }
-    if command == "install-cli" and before is not None:
-        fail("another Qwen Code CLI version is installed; use update-cli")
-    if command == "update-cli" and before is None:
-        fail("Qwen Code CLI is not installed at the selected target; use install-cli")
-    with target_lock(target):
-        ensure_private_directory(target, create=True)
-        npm_prefix = target / "packages" / "npm"
-        npm_prefix.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-        npm_prefix.chmod(OWNER_DIRECTORY_MODE)
-        env = {
-            "HOME": str(target),
-            "USERPROFILE": str(target),
-            "QWEN_HOME": str(target),
-            "QWEN_RUNTIME_DIR": str(target / "runtime"),
-            "PATH": os.environ.get("PATH", CONTROLLED_PATH),
-            "npm_config_prefix": str(npm_prefix),
-            "npm_config_cache": str(target / "runtime" / "npm-cache"),
-            "npm_config_update_notifier": "false",
-            "npm_config_audit": "false",
-            "npm_config_fund": "false",
-        }
-        (target / "runtime").mkdir(mode=OWNER_DIRECTORY_MODE, exist_ok=True)
-        completed = bounded_process(
-            ["npm", "install", "--global", "--prefix", str(npm_prefix), NPM_SPEC],
-            cwd=target,
-            env=env,
-            timeout=PROCESS_TIMEOUT_SECONDS,
+def validate_software_parent_destination(target: Path, relative: Path) -> None:
+    parent = target / relative
+    if not path_exists_no_follow(parent):
+        return
+    info = require_directory(parent, f"existing software parent {relative}")
+    if not is_owner_private_directory(info):
+        fail(f"existing software parent {relative} must be private to the current user")
+
+
+def validate_replace_destination(target: Path, relative: Path) -> None:
+    destination = target / relative
+    if not path_exists_no_follow(destination):
+        return
+    if relative == Path("bin") / QWEN_COMMAND:
+        require_safe_executable(destination, target, "existing Qwen Code executable")
+        return
+    if relative == SOFTWARE_DIR_RELATIVE:
+        info = require_directory(destination, f"existing software directory {relative}")
+        if not is_owner_private_directory(info):
+            fail(f"existing software directory {relative} must be private to the current user")
+        return
+    if relative == SOFTWARE_MANIFEST_RELATIVE:
+        require_regular_file(
+            destination,
+            f"existing software manifest {relative}",
+            owner_only=True,
         )
-        if completed.returncode != 0:
-            fail(f"npm install failed with exit {completed.returncode}: {completed.stderr.strip()}")
-        source = npm_prefix / "bin" / "qwen"
-        visible = target / "bin" / "qwen"
-        if source.is_symlink():
-            resolved = source.resolve(strict=True)
-            visible.parent.mkdir(mode=OWNER_DIRECTORY_MODE, exist_ok=True)
-            if visible.exists() or visible.is_symlink():
-                visible.unlink()
-            visible.symlink_to(resolved)
-        elif source.is_file():
-            visible.parent.mkdir(mode=OWNER_DIRECTORY_MODE, exist_ok=True)
-            shutil.copy2(source, visible)
-            visible.chmod(0o700)
-        else:
-            fail("npm install did not produce qwen binary")
-        installation = require_current_software(target)
+        return
+    fail(f"unsupported software replace path: {relative}")
+
+
+def validate_existing_software_tree_safety(target: Path) -> None:
+    install_root = target / SOFTWARE_DIR_RELATIVE
+    if not path_exists_no_follow(install_root):
+        return
+    byte_counter = {"value": 0}
+    for relative in iter_software_tree_paths(target):
+        path = target / relative
+        if not path_exists_no_follow(path):
+            continue
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            if not is_owner_private_directory(info):
+                fail(f"existing software directory {relative} must be private to the current user")
+            continue
+        if stat.S_ISLNK(info.st_mode):
+            validate_software_symlink(
+                path,
+                target,
+                f"existing software path {relative}",
+                byte_counter,
+            )
+            continue
+        digest_regular_file(path, f"existing software file {relative}", byte_counter)
+
+
+def validate_existing_software_surface(target: Path) -> None:
+    for relative in SOFTWARE_PARENT_PATHS:
+        validate_software_parent_destination(target, relative)
+    for relative in SOFTWARE_REPLACE_PATHS:
+        validate_replace_destination(target, relative)
+    validate_existing_software_tree_safety(target)
+
+
+def ensure_replace_parent(destination: Path) -> None:
+    parent = destination.parent
+    try:
+        info = parent.lstat()
+    except FileNotFoundError:
+        parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True)
+        parent.chmod(OWNER_DIRECTORY_MODE)
+        return
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"software destination parent {parent} must be a real directory")
+    if not is_owner_private_directory(info):
+        fail(f"software destination parent {parent} must be private to the current user")
+
+
+def move_replace_path(source: Path, destination: Path) -> None:
+    ensure_replace_parent(destination)
+    os.replace(source, destination)
+
+
+def move_old_path(source: Path, saved: Path) -> None:
+    saved.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+    os.replace(source, saved)
+
+
+def cleanup_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def restore_software_paths(
+    target: Path,
+    hold: Path,
+    live_stage: Path,
+    *,
+    moved_old: list[Path],
+    installed_new: list[Path],
+    preexisting_parent_paths: set[Path],
+) -> None:
+    new_paths = set(installed_new)
+    for relative in SOFTWARE_REPLACE_PATHS:
+        if relative not in new_paths and not path_exists_no_follow(live_stage / relative):
+            new_paths.add(relative)
+    for relative in reversed(SOFTWARE_REPLACE_PATHS):
+        destination = target / relative
+        if relative in new_paths and path_exists_no_follow(destination):
+            cleanup_path(destination)
+    for relative in reversed(moved_old):
+        saved = hold / relative
+        if not path_exists_no_follow(saved):
+            continue
+        move_replace_path(saved, target / relative)
+    for relative in sorted(SOFTWARE_PARENT_PATHS, key=lambda item: len(item.parts), reverse=True):
+        if relative in preexisting_parent_paths:
+            continue
+        parent = target / relative
+        if not parent.exists() or parent.is_symlink() or not parent.is_dir():
+            continue
+        try:
+            parent.rmdir()
+        except OSError:
+            continue
+
+
+def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) -> None:
+    for relative in SOFTWARE_REPLACE_PATHS:
+        source = live_stage / relative
+        if not path_exists_no_follow(source):
+            fail(f"staged software path {relative} is missing")
+        validate_replace_destination(live_stage, relative)
+        validate_replace_destination(target, relative)
+    hold = hold_parent / "rollback"
+    if path_exists_no_follow(hold):
+        cleanup_path(hold)
+    hold.mkdir(mode=OWNER_DIRECTORY_MODE)
+    preexisting_parent_paths = {
+        relative for relative in SOFTWARE_PARENT_PATHS if path_exists_no_follow(target / relative)
+    }
+    moved_old: list[Path] = []
+    installed_new: list[Path] = []
+    try:
+        for relative in SOFTWARE_REPLACE_PATHS:
+            destination = target / relative
+            if path_exists_no_follow(destination):
+                saved = hold / relative
+                move_old_path(destination, saved)
+                moved_old.append(relative)
+        for relative in SOFTWARE_REPLACE_PATHS:
+            move_replace_path(live_stage / relative, target / relative)
+            installed_new.append(relative)
+        status = software_status(target)
+        if not status["installed"] or not status["current"]:
+            fail("installed Qwen Code CLI did not validate as the tested standalone version")
+    except BaseException:
+        moved_old = [
+            relative for relative in SOFTWARE_REPLACE_PATHS if path_exists_no_follow(hold / relative)
+        ]
+        restore_software_paths(
+            target,
+            hold,
+            live_stage,
+            moved_old=moved_old,
+            installed_new=installed_new,
+            preexisting_parent_paths=preexisting_parent_paths,
+        )
+        raise
+    finally:
+        shutil.rmtree(hold, ignore_errors=True)
+
+
+def run_official_standalone_installer(stage_root: Path, live_stage: Path) -> None:
+    installer = download_official_installer(stage_root)
+    env = install_stage_environment(stage_root, live_stage)
+    completed = bounded_process(
+        ["/bin/bash", str(installer), *INSTALLER_ARGV],
+        cwd=stage_root,
+        env=env,
+        timeout=PROCESS_TIMEOUT_SECONDS,
+    )
+    if completed.returncode != 0:
+        fail(
+            "official Qwen Code standalone installer failed with exit "
+            f"{completed.returncode}: {completed.stderr.strip()}"
+        )
+    chmod_private_tree(live_stage)
+    observed = observed_qwen_version(live_stage / "bin" / QWEN_COMMAND, live_stage)
+    if observed != TESTED_QWEN_CODE_VERSION:
+        fail(f"installer produced Qwen Code {observed}, expected {TESTED_QWEN_CODE_VERSION}")
+
+
+def write_stage_software_manifest(live_stage: Path) -> None:
+    manifest = live_stage / SOFTWARE_MANIFEST_RELATIVE
+    manifest.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+    manifest.write_bytes(canonical_json(build_software_manifest(live_stage)))
+    manifest.chmod(OWNER_FILE_MODE)
+
+
+def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
+    target_existed_before = path_exists_no_follow(target)
+    preflight = software_status(target)
+    if command == "install-cli":
+        if preflight.get("partial"):
+            fail(
+                "partial target-owned Qwen Code software state exists; "
+                "use update-cli or repair/remove the target-owned software paths"
+            )
+        if preflight.get("replace_paths_present") or preflight.get("owned_parent_paths_present"):
+            fail("Qwen Code CLI software already exists; use update-cli")
+    if command == "update-cli":
+        if preflight["software_state"] == "absent":
+            fail("Qwen Code CLI is not installed at the selected target; use install-cli")
+        validate_existing_software_surface(target)
+        if preflight["installed"] and preflight["current"]:
+            return {
+                "schema_version": 1,
+                "command": command,
+                "target": str(target),
+                "changed": False,
+                "version": preflight["version"],
+                "executable": preflight["executable"],
+            }
+    staging: Path | None = None
+    with target_lock(target):
+        try:
+            ensure_private_directory(target, create=True)
+            status = software_status(target)
+            if command == "install-cli":
+                if status.get("partial"):
+                    fail(
+                        "partial target-owned Qwen Code software state exists; "
+                        "use update-cli or repair/remove the target-owned software paths"
+                    )
+                if status.get("replace_paths_present") or status.get("owned_parent_paths_present"):
+                    fail("Qwen Code CLI software already exists; use update-cli")
+            if command == "update-cli":
+                if status["software_state"] == "absent":
+                    fail("Qwen Code CLI is not installed at the selected target; use install-cli")
+                validate_existing_software_surface(target)
+                if status["installed"] and status["current"]:
+                    return {
+                        "schema_version": 1,
+                        "command": command,
+                        "target": str(target),
+                        "changed": False,
+                        "version": status["version"],
+                        "executable": status["executable"],
+                    }
+            staging = Path(
+                tempfile.mkdtemp(
+                    dir=target.parent,
+                    prefix=f".{target.name}.nddev-qwen-code-cli-stage.",
+                )
+            )
+            staging.chmod(OWNER_DIRECTORY_MODE)
+            live_stage = staging / "live"
+            live_stage.mkdir(mode=OWNER_DIRECTORY_MODE)
+            run_official_standalone_installer(staging, live_stage)
+            chmod_private_tree(live_stage)
+            write_stage_software_manifest(live_stage)
+            replace_software_state(target, live_stage, staging)
+            installation = require_current_software(target)
+        except BaseException:
+            remove_created_target_if_empty(target, target_existed_before)
+            raise
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
     return {
         "schema_version": 1,
         "command": command,
@@ -1290,14 +2026,9 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
     with target_lock(target):
         require_clean_managed(target)
         installation = require_current_software(target)
-        runtime = target / "runtime"
-        runtime.mkdir(mode=OWNER_DIRECTORY_MODE, exist_ok=True)
-        environment = os.environ.copy()
-        environment["QWEN_HOME"] = str(target)
-        environment["QWEN_RUNTIME_DIR"] = str(runtime)
-        environment["HOME"] = str(target)
-        environment["USERPROFILE"] = str(target)
-        return spawn_qwen_child(str(installation["executable"]), forwarded, environment)
+        environment = launch_environment(target)
+        executable = str(installation["executable"])
+    return spawn_qwen_child(executable, forwarded, environment)
 
 
 def human_output(value: dict[str, Any]) -> str:
@@ -1356,8 +2087,8 @@ def build_parser() -> argparse.ArgumentParser:
     for command, help_text in (
         ("builder-status", "Inspect the native nddev-builder Qwen extension."),
         ("software-status", "Inspect target-owned Qwen Code CLI software."),
-        ("install-cli", "Install the pinned official Qwen Code npm package."),
-        ("update-cli", "Update target-owned Qwen Code to the pinned package."),
+        ("install-cli", "Install the pinned official Qwen Code standalone build."),
+        ("update-cli", "Update target-owned Qwen Code to the pinned standalone build."),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         add_target(command_parser)
