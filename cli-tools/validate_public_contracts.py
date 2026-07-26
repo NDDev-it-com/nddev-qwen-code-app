@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -56,27 +55,63 @@ def validate_versions(errors: list[str]) -> None:
 
     require(SEMVER.fullmatch(version) is not None, "VERSION is not SemVer", errors)
     require(version != "0.0.0", "VERSION must not be placeholder 0.0.0", errors)
-    require(build.get("build_version") == version, "build/version.json build_version mismatch", errors)
-    require(manifest.get("build_version") == version, "build/manifest.json build_version mismatch", errors)
-    require(contract.get("version_ref") == "build/version.json", "contract version_ref mismatch", errors)
-    require(contract.get("manifest_ref") == "build/manifest.json", "contract manifest_ref mismatch", errors)
-    require(PLACEHOLDER_MARKER not in contract, "contract must not contain placeholder marker", errors)
+    require(
+        build.get("build_version") == version, "build/version.json build_version mismatch", errors
+    )
+    require(
+        manifest.get("build_version") == version,
+        "build/manifest.json build_version mismatch",
+        errors,
+    )
+    require(
+        contract.get("version_ref") == "build/version.json", "contract version_ref mismatch", errors
+    )
+    require(
+        contract.get("manifest_ref") == "build/manifest.json",
+        "contract manifest_ref mismatch",
+        errors,
+    )
+    require(
+        PLACEHOLDER_MARKER not in contract, "contract must not contain placeholder marker", errors
+    )
     require(build.get("schema_version") == 2, "build/version.json schema_version mismatch", errors)
-    require(manifest.get("schema_version") == 2, "build/manifest.json schema_version mismatch", errors)
+    require(
+        manifest.get("schema_version") == 2, "build/manifest.json schema_version mismatch", errors
+    )
     require(contract.get("contract_version") == 2, "contract_version mismatch", errors)
 
-    require(build.get("qwen_code_tested") == EXPECTED_QWEN["version"], "tested Qwen version mismatch", errors)
-    require(build.get("qwen_code_release_tag") == EXPECTED_QWEN["release_tag"], "Qwen release tag mismatch", errors)
+    require(
+        build.get("qwen_code_tested") == EXPECTED_QWEN["version"],
+        "tested Qwen version mismatch",
+        errors,
+    )
+    require(
+        build.get("qwen_code_release_tag") == EXPECTED_QWEN["release_tag"],
+        "Qwen release tag mismatch",
+        errors,
+    )
     require(
         build.get("qwen_code_release_published_at") == EXPECTED_QWEN["release_published_at"],
         "Qwen release timestamp mismatch",
         errors,
     )
-    require(build.get("npm_package") == EXPECTED_QWEN["npm_package"], "npm package mismatch", errors)
-    require(build.get("npm_tarball") == EXPECTED_QWEN["npm_tarball"], "npm tarball mismatch", errors)
+    require(
+        build.get("npm_package") == EXPECTED_QWEN["npm_package"], "npm package mismatch", errors
+    )
+    require(
+        build.get("npm_tarball") == EXPECTED_QWEN["npm_tarball"], "npm tarball mismatch", errors
+    )
     require(build.get("npm_shasum") == EXPECTED_QWEN["npm_shasum"], "npm shasum mismatch", errors)
-    require(build.get("npm_integrity") == EXPECTED_QWEN["npm_integrity"], "npm integrity mismatch", errors)
-    require(build.get("node_requires") == EXPECTED_QWEN["node_requires"], "Node requirement mismatch", errors)
+    require(
+        build.get("npm_integrity") == EXPECTED_QWEN["npm_integrity"],
+        "npm integrity mismatch",
+        errors,
+    )
+    require(
+        build.get("node_requires") == EXPECTED_QWEN["node_requires"],
+        "Node requirement mismatch",
+        errors,
+    )
 
     for owner, runtime in (
         ("manifest", manifest.get("runtime_compatibility")),
@@ -84,21 +119,59 @@ def validate_versions(errors: list[str]) -> None:
     ):
         require(isinstance(runtime, dict), f"{owner} runtime_compatibility missing", errors)
         if isinstance(runtime, dict):
-            require(runtime.get("tested_version") == build.get("qwen_code_tested"), f"{owner} tested version mismatch", errors)
-            require(runtime.get("npm_package") == build.get("npm_package"), f"{owner} npm package mismatch", errors)
-            require(runtime.get("release_tag") == build.get("qwen_code_release_tag"), f"{owner} release tag mismatch", errors)
-            require(runtime.get("baseline_ref") == build.get("runtime_baseline_ref"), f"{owner} baseline ref mismatch", errors)
-            require(runtime.get("version_ref") == "build/version.json", f"{owner} version_ref mismatch", errors)
+            require(
+                runtime.get("tested_version") == build.get("qwen_code_tested"),
+                f"{owner} tested version mismatch",
+                errors,
+            )
+            require(
+                runtime.get("npm_package") == build.get("npm_package"),
+                f"{owner} npm package mismatch",
+                errors,
+            )
+            require(
+                runtime.get("release_tag") == build.get("qwen_code_release_tag"),
+                f"{owner} release tag mismatch",
+                errors,
+            )
+            require(
+                runtime.get("baseline_ref") == build.get("runtime_baseline_ref"),
+                f"{owner} baseline ref mismatch",
+                errors,
+            )
+            require(
+                runtime.get("version_ref") == "build/version.json",
+                f"{owner} version_ref mismatch",
+                errors,
+            )
 
     npm = baseline.get("npm")
     require(isinstance(npm, dict), "baseline npm block missing", errors)
     if isinstance(npm, dict):
-        require(npm.get("package") == build.get("npm_package"), "baseline npm package mismatch", errors)
-        require(npm.get("version") == build.get("qwen_code_tested"), "baseline npm version mismatch", errors)
-        require(npm.get("tarball") == build.get("npm_tarball"), "baseline npm tarball mismatch", errors)
-        require(npm.get("shasum") == build.get("npm_shasum"), "baseline npm shasum mismatch", errors)
-        require(npm.get("integrity") == build.get("npm_integrity"), "baseline npm integrity mismatch", errors)
-        require(npm.get("node_requires") == build.get("node_requires"), "baseline node requirement mismatch", errors)
+        require(
+            npm.get("package") == build.get("npm_package"), "baseline npm package mismatch", errors
+        )
+        require(
+            npm.get("version") == build.get("qwen_code_tested"),
+            "baseline npm version mismatch",
+            errors,
+        )
+        require(
+            npm.get("tarball") == build.get("npm_tarball"), "baseline npm tarball mismatch", errors
+        )
+        require(
+            npm.get("shasum") == build.get("npm_shasum"), "baseline npm shasum mismatch", errors
+        )
+        require(
+            npm.get("integrity") == build.get("npm_integrity"),
+            "baseline npm integrity mismatch",
+            errors,
+        )
+        require(
+            npm.get("node_requires") == build.get("node_requires"),
+            "baseline node requirement mismatch",
+            errors,
+        )
 
 
 def validate_setups(errors: list[str]) -> None:
@@ -114,27 +187,61 @@ def validate_setups(errors: list[str]) -> None:
             "permission surface mismatch",
             errors,
         )
-        require(permission_policy.get("setups") == EXPECTED_SETUP_POLICY, "permission setup policy mismatch", errors)
-        require(permission_policy.get("source") == "setups/<id>/settings.json", "permission policy source mismatch", errors)
+        require(
+            permission_policy.get("setups") == EXPECTED_SETUP_POLICY,
+            "permission setup policy mismatch",
+            errors,
+        )
+        require(
+            permission_policy.get("source") == "setups/<id>/settings.json",
+            "permission policy source mismatch",
+            errors,
+        )
     setup_system = contract.get("setup_system")
     require(isinstance(setup_system, dict), "contract setup_system missing", errors)
     if isinstance(setup_system, dict):
-        require(setup_system.get("setup_ids") == expected_ids, "contract setup_ids mismatch", errors)
-        require(setup_system.get("builder_default_on") is True, "builder must be default-on", errors)
+        require(
+            setup_system.get("setup_ids") == expected_ids, "contract setup_ids mismatch", errors
+        )
+        require(
+            setup_system.get("builder_default_on") is True, "builder must be default-on", errors
+        )
 
     for setup_id, policy in EXPECTED_SETUP_POLICY.items():
         setup = read_json(f"setups/{setup_id}/setup.json")
         settings = read_json(f"setups/{setup_id}/settings.json")
         require(setup.get("id") == setup_id, f"{setup_id} setup id mismatch", errors)
-        require(setup.get("managed_files") == ["settings.json", "QWEN.md"], f"{setup_id} managed_files mismatch", errors)
-        require(setup.get("builder_extension") == "extensions/nddev-builder", f"{setup_id} builder path mismatch", errors)
-        require(setup.get("builder_default_on") is True, f"{setup_id} builder must be default-on", errors)
+        require(
+            setup.get("managed_files") == ["settings.json", "QWEN.md"],
+            f"{setup_id} managed_files mismatch",
+            errors,
+        )
+        require(
+            setup.get("builder_extension") == "extensions/nddev-builder",
+            f"{setup_id} builder path mismatch",
+            errors,
+        )
+        require(
+            setup.get("builder_default_on") is True,
+            f"{setup_id} builder must be default-on",
+            errors,
+        )
         tools = settings.get("tools")
         require(isinstance(tools, dict), f"{setup_id} tools block missing", errors)
         if isinstance(tools, dict):
-            require(tools.get("approvalMode") == policy["approvalMode"], f"{setup_id} approvalMode mismatch", errors)
-            require(tools.get("sandbox") is policy["sandbox"], f"{setup_id} sandbox mismatch", errors)
-        require(settings.get("context") == {"fileName": ["QWEN.md"]}, f"{setup_id} context file mismatch", errors)
+            require(
+                tools.get("approvalMode") == policy["approvalMode"],
+                f"{setup_id} approvalMode mismatch",
+                errors,
+            )
+            require(
+                tools.get("sandbox") is policy["sandbox"], f"{setup_id} sandbox mismatch", errors
+            )
+        require(
+            settings.get("context") == {"fileName": ["QWEN.md"]},
+            f"{setup_id} context file mismatch",
+            errors,
+        )
         privacy = settings.get("privacy")
         require(
             isinstance(privacy, dict) and privacy.get("usageStatisticsEnabled") is False,
@@ -155,7 +262,9 @@ def validate_builder(errors: list[str]) -> None:
         "builder extension version mismatch",
         errors,
     )
-    require(extension.get("contextFileName") == "QWEN.md", "builder contextFileName mismatch", errors)
+    require(
+        extension.get("contextFileName") == "QWEN.md", "builder contextFileName mismatch", errors
+    )
     require(extension.get("skills") == "skills", "builder skills path mismatch", errors)
     require(extension.get("agents") == "agents", "builder agents path mismatch", errors)
     for relative in (
@@ -165,10 +274,20 @@ def validate_builder(errors: list[str]) -> None:
     ):
         require((ROOT / relative).is_file(), f"missing builder native file: {relative}", errors)
     if isinstance(builder, dict):
-        require(builder.get("projection") == "qwen-extension", "builder projection mismatch", errors)
+        require(
+            builder.get("projection") == "qwen-extension", "builder projection mismatch", errors
+        )
         require(builder.get("default_on") is True, "builder default_on mismatch", errors)
-        require(builder.get("marketplace_manifest") is False, "builder marketplace_manifest must be false", errors)
-        require(builder.get("native_paths") == ["QWEN.md", "skills", "agents"], "builder native paths mismatch", errors)
+        require(
+            builder.get("marketplace_manifest") is False,
+            "builder marketplace_manifest must be false",
+            errors,
+        )
+        require(
+            builder.get("native_paths") == ["QWEN.md", "skills", "agents"],
+            "builder native paths mismatch",
+            errors,
+        )
 
 
 def validate_absent_obsolete_aliases(errors: list[str]) -> None:

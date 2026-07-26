@@ -293,7 +293,9 @@ def render_builder() -> dict[str, bytes]:
         else:
             ensure_lf_text(content, f"builder source {relative}")
         rendered[relative] = content
-    extension = parse_json_object(rendered["extensions/nddev-builder/qwen-extension.json"], "builder extension")
+    extension = parse_json_object(
+        rendered["extensions/nddev-builder/qwen-extension.json"], "builder extension"
+    )
     require_exact_keys(
         extension,
         {"name", "displayName", "description", "version", "contextFileName", "skills", "agents"},
@@ -500,8 +502,7 @@ def stamp_bytes(target: Path, setup_id: str, rendered: dict[str, bytes]) -> byte
             "setup_id": setup_id,
             "canonical_target": str(target),
             "managed_paths": {
-                name: sha256_bytes(rendered[name])
-                for name in (*MANAGED_FILES, *BUILDER_FILES)
+                name: sha256_bytes(rendered[name]) for name in (*MANAGED_FILES, *BUILDER_FILES)
             },
         }
     )
@@ -521,9 +522,10 @@ def load_stamp(target: Path) -> dict[str, Any] | None:
     require_exact_keys(value, STAMP_KEYS, "managed stamp")
     if value["schema_version"] != 1 or value["product_name"] != PRODUCT_NAME:
         fail("managed stamp identity or schema is invalid")
-    if not isinstance(value["build_version"], str) or SEMVER_PATTERN.fullmatch(
-        value["build_version"]
-    ) is None:
+    if (
+        not isinstance(value["build_version"], str)
+        or SEMVER_PATTERN.fullmatch(value["build_version"]) is None
+    ):
         fail("managed stamp build version is invalid")
     if value["canonical_target"] != str(target):
         fail("managed stamp is bound to a different canonical target")
@@ -602,7 +604,9 @@ def inspect_target(target: Path) -> dict[str, Any]:
             "build_version": None,
             "drift": [],
             "unmanaged_managed_paths": existing,
-            "builder_extension": "present" if (target / "extensions" / "nddev-builder").exists() else "missing",
+            "builder_extension": "present"
+            if (target / "extensions" / "nddev-builder").exists()
+            else "missing",
         }
     expected = validate_digest_map(stamp["managed_paths"], "managed stamp managed_paths")
     drift: list[str] = []
@@ -635,7 +639,9 @@ def inspect_target(target: Path) -> dict[str, Any]:
         "build_version": stamp["build_version"],
         "drift": drift,
         "unmanaged_managed_paths": [],
-        "builder_extension": "present" if not any(name in drift for name in BUILDER_FILES) else "drift",
+        "builder_extension": "present"
+        if not any(name in drift for name in BUILDER_FILES)
+        else "drift",
     }
 
 
@@ -893,13 +899,17 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
     return envelope, desired
 
 
-def desired_for_setup(target: Path, setup_id: str, *, preserve_from_current: bool) -> dict[str, bytes]:
+def desired_for_setup(
+    target: Path, setup_id: str, *, preserve_from_current: bool
+) -> dict[str, bytes]:
     _, rendered = render_setup(setup_id)
     if preserve_from_current and path_exists_no_follow(target / "settings.json"):
         current, _ = read_regular_file(target / "settings.json", "managed settings.json")
         rendered["settings.json"] = merge_settings(
             rendered["settings.json"],
-            settings_overlay(current, load_stamp(target)["setup_id"] if load_stamp(target) else setup_id),
+            settings_overlay(
+                current, load_stamp(target)["setup_id"] if load_stamp(target) else setup_id
+            ),
         )
     return {**rendered, STAMP_NAME: stamp_bytes(target, setup_id, rendered)}
 
@@ -1097,7 +1107,10 @@ def bounded_qwen_version(executable: Path, target: Path) -> str:
     )
     if completed.returncode != 0:
         fail(f"Qwen Code version check failed with exit {completed.returncode}")
-    if len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES:
+    if (
+        len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES
+        or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES
+    ):
         fail("Qwen Code version output exceeded its size limit")
     text = completed.stdout.strip()
     match = re.fullmatch(r"(?:qwen(?:-code)?\s+)?([0-9][0-9A-Za-z.+-]*)", text)
@@ -1156,7 +1169,9 @@ def software_status(target: Path) -> dict[str, Any]:
     }
 
 
-def bounded_process(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int) -> subprocess.CompletedProcess[str]:
+def bounded_process(
+    command: list[str], *, cwd: Path, env: dict[str, str], timeout: int
+) -> subprocess.CompletedProcess[str]:
     completed = subprocess.run(
         command,
         cwd=cwd,
@@ -1167,7 +1182,10 @@ def bounded_process(command: list[str], *, cwd: Path, env: dict[str, str], timeo
         check=False,
         timeout=timeout,
     )
-    if len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES:
+    if (
+        len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES
+        or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES
+    ):
         fail(f"process output exceeded {PROCESS_OUTPUT_MAX_BYTES}-byte limit: {command[0]}")
     return completed
 
@@ -1285,9 +1303,7 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
 def human_output(value: dict[str, Any]) -> str:
     command = value.get("command")
     if command == "list":
-        return "\n".join(
-            f"{item['id']}: {item['description']}" for item in value["setups"]
-        )
+        return "\n".join(f"{item['id']}: {item['description']}" for item in value["setups"])
     if command == "status":
         setup = f" ({value['setup_id']})" if value["setup_id"] else ""
         drift = f"; drift={','.join(value['drift'])}" if value["drift"] else ""
@@ -1296,7 +1312,9 @@ def human_output(value: dict[str, Any]) -> str:
         changes = ", ".join(value["changes"]) or "none"
         return f"{value['operation']} {value['setup_id']} at {value['target']}; changes: {changes}"
     if command == "software-status":
-        return f"installed={value['installed']} current={value['current']} version={value['version']}"
+        return (
+            f"installed={value['installed']} current={value['current']} version={value['version']}"
+        )
     if command == "builder-status":
         return (
             f"installed={value['installed']} default_on={value['default_on']} "
