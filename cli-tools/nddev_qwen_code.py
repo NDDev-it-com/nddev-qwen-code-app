@@ -135,6 +135,62 @@ FORBIDDEN_CHILD_ENV_PREFIXES = (
     "BUN_CONFIG_",
     "npm_config_",
 )
+QWEN_SCOPE_FLAGS_WITH_VALUE = {
+    "--add-dir",
+    "--allowed-mcp-server-names",
+    "--allowed-tools",
+    "--append-system-prompt",
+    "--approval-mode",
+    "--auth-type",
+    "--core-tools",
+    "--exclude-tools",
+    "--extensions",
+    "--fallback-model",
+    "--include-directories",
+    "--json-fd",
+    "--json-file",
+    "--json-schema",
+    "--max-session-turns",
+    "--max-subagent-depth",
+    "--max-tool-calls",
+    "--mcp-config",
+    "--model",
+    "--openai-api-key",
+    "--openai-base-url",
+    "--openai-logging-dir",
+    "--proxy",
+    "--resume",
+    "--sandbox-image",
+    "--sandbox-session-id",
+    "--session-id",
+    "--system-prompt",
+    "--telemetry-otlp-endpoint",
+    "--telemetry-otlp-protocol",
+    "--telemetry-outfile",
+    "--telemetry-target",
+    "--worktree",
+    "-e",
+    "-m",
+    "-r",
+}
+QWEN_SCOPE_FLAGS_WITHOUT_VALUE = {
+    "--chat-recording",
+    "--continue",
+    "--debug",
+    "--fork-session",
+    "--list-extensions",
+    "--openai-logging",
+    "--safe-mode",
+    "--sandbox",
+    "--telemetry",
+    "--telemetry-log-prompts",
+    "--yolo",
+    "-c",
+    "-d",
+    "-l",
+    "-s",
+    "-y",
+}
 
 
 class QwenCodeSetupError(Exception):
@@ -1186,7 +1242,7 @@ def chmod_private_tree(root: Path) -> None:
 def safe_child_base_environment(*, include_path: bool) -> dict[str, str]:
     env: dict[str, str] = {}
     if include_path:
-        env["PATH"] = os.environ.get("PATH", CONTROLLED_PATH)
+        env["PATH"] = CONTROLLED_PATH
     for name in ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "COLORTERM", "NO_COLOR"):
         value = os.environ.get(name)
         if value:
@@ -2021,8 +2077,25 @@ def spawn_qwen_child(executable: str, child_args: list[str], environment: dict[s
     return completed.returncode
 
 
+def first_qwen_scope_override(child_args: list[str]) -> str | None:
+    """Return the first official Qwen flag that would override managed scope."""
+    for argument in child_args:
+        if argument == "--":
+            return None
+        if argument in QWEN_SCOPE_FLAGS_WITHOUT_VALUE or argument in QWEN_SCOPE_FLAGS_WITH_VALUE:
+            return argument
+        if argument.startswith("--"):
+            flag = argument.split("=", 1)[0]
+            if flag in QWEN_SCOPE_FLAGS_WITH_VALUE and "=" in argument:
+                return flag
+    return None
+
+
 def launch_qwen(target: Path, child_args: list[str]) -> int:
     forwarded = child_args[1:] if child_args[:1] == ["--"] else child_args
+    override = first_qwen_scope_override(forwarded)
+    if override is not None:
+        fail(f"launch arguments must not override target-owned Qwen Code scope: {override}")
     with target_lock(target):
         require_clean_managed(target)
         installation = require_current_software(target)

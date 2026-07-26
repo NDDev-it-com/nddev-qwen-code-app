@@ -86,8 +86,9 @@ python3 cli-tools/nddev_qwen_code.py launch \
 `install-cli` downloads the pinned official standalone installer, verifies its
 SHA-256, and invokes it with `--method standalone --version 0.21.0
 --no-modify-path` inside a same-parent staging directory with isolated
-`QWEN_INSTALL_ROOT`, `HOME`, and XDG directories. The installer performs the
-official `SHA256SUMS` archive verification. The manager then writes a
+`QWEN_INSTALL_ROOT`, `HOME`, XDG directories, temp directories, and a controlled
+system `PATH`. The installer performs the official `SHA256SUMS` archive
+verification. The manager then writes a
 deterministic software manifest and atomically swaps only target-owned
 `bin/qwen`, `lib/qwen-code`, and `software/qwen-code.json`.
 
@@ -97,7 +98,9 @@ installer is downloaded. `software-status` validates the manifest and bounded
 tree digest without executing `bin/qwen`. Launch never resolves `qwen` from
 ambient `PATH`; it executes `<target>/bin/qwen` with target-owned
 `QWEN_HOME`, `QWEN_RUNTIME_DIR`, `HOME`, `USERPROFILE`, XDG, and temp
-directories.
+directories. Launch forwards ordinary child arguments, but rejects official
+Qwen Code arguments that override the managed target, configuration, extension,
+MCP, tool, sandbox, authentication, session, telemetry, or logging scope.
 
 ## Public/private boundary
 
