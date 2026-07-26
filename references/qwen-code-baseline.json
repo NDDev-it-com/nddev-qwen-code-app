@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "source": "QwenLM/qwen-code",
+  "release": {
+    "tag": "v0.21.0",
+    "published_at": "2026-07-24T13:32:48Z",
+    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.0"
+  },
+  "npm": {
+    "package": "@qwen-code/qwen-code",
+    "version": "0.21.0",
+    "binary": "qwen",
+    "node_requires": ">=22.0.0",
+    "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz",
+    "shasum": "0c34828a81a068ecc07be92c611ae30a644f9bc5",
+    "integrity": "sha512-h4t8crH1WTKS4I3uolOQGTzvGu7iW9DuqIegaq+v8yRXTyTkNV7k74AARHPWYh5DJL1ZY/ZCDsOuPsNhaLlnog=="
+  },
+  "configuration": {
+    "home_environment_variable": "QWEN_HOME",
+    "runtime_environment_variable": "QWEN_RUNTIME_DIR",
+    "global_settings": "settings.json",
+    "global_context_file": "QWEN.md",
+    "extension_root": "extensions",
+    "extension_manifest": "qwen-extension.json"
+  },
+  "native_builder_projection": {
+    "extension": "extensions/nddev-builder",
+    "context": "extensions/nddev-builder/QWEN.md",
+    "skills": "extensions/nddev-builder/skills",
+    "agents": "extensions/nddev-builder/agents"
+  }
+}

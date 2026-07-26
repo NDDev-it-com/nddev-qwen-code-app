@@ -1,0 +1,138 @@
+{
+  "schema_version": 2,
+  "name": "nddev-qwen-code-app",
+  "build_version": "0.1.0",
+  "entrypoint": "python3 cli-tools/nddev_qwen_code.py",
+  "source_root": "setups",
+  "setup_ids": ["safe", "balanced", "full-auto"],
+  "managed_files": [
+    "settings.json",
+    "QWEN.md",
+    "extensions/nddev-builder/qwen-extension.json",
+    "extensions/nddev-builder/QWEN.md",
+    "extensions/nddev-builder/skills/qwen-builder-orientation/SKILL.md",
+    "extensions/nddev-builder/agents/qwen-builder-reviewer.md",
+    "NDDEV-QWEN-CODE-SETUP.json"
+  ],
+  "permission_policy": {
+    "configuration_surface": "tools.approvalMode",
+    "setups": {
+      "safe": {
+        "approvalMode": "default",
+        "sandbox": true
+      },
+      "balanced": {
+        "approvalMode": "auto-edit",
+        "sandbox": true
+      },
+      "full-auto": {
+        "approvalMode": "yolo",
+        "sandbox": false
+      }
+    },
+    "source": "setups/<id>/settings.json"
+  },
+  "builder_extension": {
+    "projection": "qwen-extension",
+    "manifest": "extensions/nddev-builder/qwen-extension.json",
+    "native_paths": ["QWEN.md", "skills", "agents"],
+    "default_on": true
+  },
+  "runtime_compatibility": {
+    "baseline_ref": "references/qwen-code-baseline.json",
+    "version_ref": "build/version.json",
+    "tested_version": "0.21.0",
+    "npm_package": "@qwen-code/qwen-code",
+    "release_tag": "v0.21.0",
+    "documentation": [
+      "docs/users/configuration/settings.md",
+      "docs/users/extension/introduction.md",
+      "docs/users/features/skills.md",
+      "docs/users/features/sub-agents.md"
+    ]
+  },
+  "runtime_launch": {
+    "command": "<absolute-target>/bin/qwen",
+    "direct_command": "QWEN_HOME=<absolute-target> QWEN_RUNTIME_DIR=<absolute-target>/runtime <absolute-target>/bin/qwen [args...]",
+    "home_environment_variable": "QWEN_HOME",
+    "runtime_environment_variable": "QWEN_RUNTIME_DIR",
+    "executable_source": "validated-target-owned-npm-install",
+    "forwards_arguments": true,
+    "forwards_child_exit_code": true,
+    "json_manager_errors_supported": true,
+    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "requires_clean_managed_target": true,
+    "streams_child_stdio": true,
+    "successful_child_output_wrapped": false,
+    "environment_scope": "child-process-only",
+    "target_must_equal_qwen_home": true
+  },
+  "backup_policy": {
+    "canonical_target_bound": true,
+    "envelope": "NDDEV-QWEN-CODE-BACKUP.json",
+    "location": "sibling .<target-name>.nddev-qwen-code-backups",
+    "slots": 10
+  },
+  "command_policy": {
+    "json_supported": [
+      "list",
+      "status",
+      "plan",
+      "install",
+      "switch",
+      "restore",
+      "remove",
+      "builder-status",
+      "software-status",
+      "install-cli",
+      "update-cli"
+    ],
+    "target_required": [
+      "status",
+      "plan",
+      "install",
+      "switch",
+      "restore",
+      "remove",
+      "builder-status",
+      "software-status",
+      "install-cli",
+      "update-cli",
+      "launch"
+    ],
+    "plan_mutates": false,
+    "restore_backup_option": "--backup <0..9>"
+  },
+  "transaction_policy": {
+    "managed_file_mode": "0600",
+    "new_target_mode": "0700",
+    "preserve_existing_target_mode": true,
+    "lock": "exclusive sibling directory",
+    "staging": "same-parent temporary paths",
+    "preserve_unmanaged_files": true,
+    "reject_symlink_managed_files": true,
+    "rollback_on_failure": true
+  },
+  "software_install": {
+    "tested_version": "0.21.0",
+    "node_requires": ">=22.0.0",
+    "supported_platforms": ["macos", "linux"],
+    "npm": {
+      "package": "@qwen-code/qwen-code",
+      "version": "0.21.0",
+      "binary": "qwen",
+      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz"
+    },
+    "layout": {
+      "visible_command": "bin/qwen",
+      "package_root": "packages/npm/node_modules/@qwen-code/qwen-code",
+      "package_manifest": "packages/npm/node_modules/@qwen-code/qwen-code/package.json",
+      "runtime_dir": "runtime"
+    },
+    "commands": {
+      "status": "python3 cli-tools/nddev_qwen_code.py software-status --target <absolute-target> [--json]",
+      "install": "python3 cli-tools/nddev_qwen_code.py install-cli --target <absolute-target> [--json]",
+      "update": "python3 cli-tools/nddev_qwen_code.py update-cli --target <absolute-target> [--json]"
+    }
+  }
+}

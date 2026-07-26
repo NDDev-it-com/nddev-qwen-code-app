@@ -1,0 +1,18 @@
+{
+  "general": {
+    "enableAutoUpdate": false
+  },
+  "tools": {
+    "approvalMode": "auto-edit",
+    "sandbox": true,
+    "computerUse": {
+      "enabled": false
+    }
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  },
+  "context": {
+    "fileName": ["QWEN.md"]
+  }
+}

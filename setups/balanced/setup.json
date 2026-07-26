@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "id": "balanced",
+  "description": "Qwen Code setup that auto-accepts edits while keeping command approval and sandbox guardrails.",
+  "managed_files": ["settings.json", "QWEN.md"],
+  "builder_extension": "extensions/nddev-builder",
+  "builder_default_on": true
+}

@@ -1,4 +1,15 @@
 {
-  "schema_version": 1,
-  "build_version": "0.0.0"
+  "schema_version": 2,
+  "build_version": "0.1.0",
+  "python_requires": ">=3.10",
+  "node_requires": ">=22.0.0",
+  "qwen_code_tested": "0.21.0",
+  "qwen_code_release_tag": "v0.21.0",
+  "qwen_code_release_published_at": "2026-07-24T13:32:48Z",
+  "npm_package": "@qwen-code/qwen-code",
+  "npm_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.0.tgz",
+  "npm_shasum": "0c34828a81a068ecc07be92c611ae30a644f9bc5",
+  "npm_integrity": "sha512-h4t8crH1WTKS4I3uolOQGTzvGu7iW9DuqIegaq+v8yRXTyTkNV7k74AARHPWYh5DJL1ZY/ZCDsOuPsNhaLlnog==",
+  "nddev_builder_extension_version": "0.1.0",
+  "runtime_baseline_ref": "references/qwen-code-baseline.json"
 }
