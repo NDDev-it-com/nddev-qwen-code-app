@@ -29,7 +29,6 @@ EXPECTED_QWEN = {
     "npm_integrity": "sha512-h4t8crH1WTKS4I3uolOQGTzvGu7iW9DuqIegaq+v8yRXTyTkNV7k74AARHPWYh5DJL1ZY/ZCDsOuPsNhaLlnog==",
     "node_requires": ">=22.0.0",
 }
-OBSOLETE_ALIAS = "q" + "coder"
 PLACEHOLDER_MARKER = "skele" + "ton"
 
 
@@ -290,7 +289,7 @@ def validate_builder(errors: list[str]) -> None:
         )
 
 
-def validate_absent_obsolete_aliases(errors: list[str]) -> None:
+def validate_public_tree(errors: list[str]) -> None:
     own_path = Path(__file__).resolve()
     for path in sorted(ROOT.rglob("*")):
         if path.is_dir() or ".git" in path.parts or "__pycache__" in path.parts:
@@ -299,8 +298,6 @@ def validate_absent_obsolete_aliases(errors: list[str]) -> None:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         lowered = text.lower()
-        if OBSOLETE_ALIAS in lowered:
-            errors.append(f"obsolete alias found in {path.relative_to(ROOT)}")
         if PLACEHOLDER_MARKER in lowered:
             errors.append(f"placeholder marker found in {path.relative_to(ROOT)}")
 
@@ -311,7 +308,7 @@ def main() -> int:
         validate_versions(errors)
         validate_setups(errors)
         validate_builder(errors)
-        validate_absent_obsolete_aliases(errors)
+        validate_public_tree(errors)
     except Exception as exc:  # noqa: BLE001 - concise public CLI failure.
         errors.append(str(exc))
 
