@@ -3,6 +3,8 @@
   "product_name": "nddev-qwen-code-app",
   "github_repository": "NDDev-it-com/nddev-qwen-code-app",
   "license": "AGPL-3.0-or-later",
-  "status": "skeleton",
-  "harness_id": "qwen-code"
+  "skeleton": {
+    "status": "skeleton",
+    "harness_id": "qwen-code"
+  }
 }
