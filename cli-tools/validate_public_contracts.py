@@ -372,6 +372,11 @@ def validate_runtime_and_software(errors: list[str]) -> None:
                 errors,
             )
             require(
+                layout.get("entrypoint_resolution") == "target-relative-wrapper",
+                f"{owner} entrypoint resolution mismatch",
+                errors,
+            )
+            require(
                 layout.get("install_root") == "lib/qwen-code",
                 f"{owner} install root mismatch",
                 errors,

@@ -69,6 +69,16 @@ SOFTWARE_REPLACE_PATHS = (
     SOFTWARE_DIR_RELATIVE,
     SOFTWARE_MANIFEST_RELATIVE,
 )
+TARGET_RELATIVE_QWEN_LAUNCHER = b"""#!/bin/sh
+set -eu
+self=$0
+case "$self" in
+  /*) ;;
+  *) self=$(pwd -P)/$self ;;
+esac
+self_dir=${self%/*}
+exec "$self_dir/../lib/qwen-code/bin/qwen" "$@"
+"""
 SOFTWARE_PARENT_PATHS = tuple(
     sorted(
         {relative.parent for relative in SOFTWARE_REPLACE_PATHS if relative.parent != Path(".")},
@@ -1366,6 +1376,30 @@ def observed_qwen_version(executable: Path, target: Path) -> str:
     return match.group(1)
 
 
+def write_target_relative_qwen_launcher(root: Path) -> None:
+    launcher = root / "bin" / QWEN_COMMAND
+    package_entrypoint = root / SOFTWARE_DIR_RELATIVE / "bin" / QWEN_COMMAND
+    require_safe_executable(launcher, root, "official Qwen Code launcher")
+    require_safe_executable(package_entrypoint, root, "Qwen Code package entrypoint")
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{QWEN_COMMAND}.",
+        suffix=".tmp",
+        dir=str(launcher.parent),
+    )
+    temp_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(TARGET_RELATIVE_QWEN_LAUNCHER)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temp_path.chmod(0o700)
+        os.replace(temp_path, launcher)
+    finally:
+        if path_exists_no_follow(temp_path):
+            cleanup_path(temp_path)
+    require_safe_executable(launcher, root, "target-relative Qwen Code launcher")
+
+
 def package_metadata(root: Path) -> dict[str, Any]:
     metadata = load_json_object(root / SOFTWARE_DIR_RELATIVE / "package.json", "Qwen Code package")
     if metadata.get("name") != QWEN_CODE_PACKAGE:
@@ -1626,6 +1660,7 @@ def software_manifest_identity() -> dict[str, Any]:
         "installer_argv": list(INSTALLER_ARGV),
         "archive_verification": "official SHA256SUMS",
         "executable": f"bin/{QWEN_COMMAND}",
+        "entrypoint_resolution": "target-relative-wrapper",
         "install_root": str(SOFTWARE_DIR_RELATIVE),
     }
 
@@ -1956,6 +1991,7 @@ def run_official_standalone_installer(stage_root: Path, live_stage: Path) -> Non
             f"{completed.returncode}: {completed.stderr.strip()}"
         )
     chmod_private_tree(live_stage)
+    write_target_relative_qwen_launcher(live_stage)
     observed = observed_qwen_version(live_stage / "bin" / QWEN_COMMAND, live_stage)
     if observed != TESTED_QWEN_CODE_VERSION:
         fail(f"installer produced Qwen Code {observed}, expected {TESTED_QWEN_CODE_VERSION}")

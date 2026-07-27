@@ -137,6 +137,7 @@
     },
     "layout": {
       "visible_command": "bin/qwen",
+      "entrypoint_resolution": "target-relative-wrapper",
       "install_root": "lib/qwen-code",
       "package_manifest": "lib/qwen-code/package.json",
       "software_manifest": "software/qwen-code.json",
