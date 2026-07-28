@@ -1683,11 +1683,29 @@ def cleanup_pending_for_target(root: Path | None, target: Path, *, read_only: bo
     unknown = sorted(entries - allowed - publication_alias_names)
     if unknown:
         fail(f"cleanup namespace contains unknown entries: {', '.join(unknown)}")
-    if path_exists_no_follow(paths["prepare"]):
+    prepare_exists = path_exists_no_follow(paths["prepare"])
+    pending_exists = path_exists_no_follow(paths["pending"])
+    if prepare_exists and pending_exists:
+        prepare = load_cleanup_document(
+            paths["prepare"],
+            target,
+            "cleanup prepare intent",
+            recover_alias=not read_only,
+        )
+        journal = load_cleanup_document(
+            paths["pending"],
+            target,
+            "cleanup journal",
+            recover_alias=not read_only,
+        )
+        if canonical_json(prepare) != canonical_json(journal):
+            fail("cleanup prepare intent does not match committed cleanup journal")
+        return True
+    if prepare_exists:
         if read_only:
             fail("cleanup prepare intent is pending")
         return True
-    if not path_exists_no_follow(paths["pending"]):
+    if not pending_exists:
         return False
     load_cleanup_document(
         paths["pending"],
