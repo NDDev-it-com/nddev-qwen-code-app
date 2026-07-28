@@ -9,7 +9,7 @@
     "stamp_file": "NDDEV-QWEN-CODE-SETUP.json",
     "stamp_schema": 1,
     "managed_file_mode": "0600",
-    "managed_files": ["settings.json", "QWEN.md"],
+    "managed_files": ["settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md"],
     "managed_tree_root": "extensions/nddev-builder",
     "preserve_other_state": true
   },
@@ -40,11 +40,15 @@
   "runtime_compatibility": {
     "baseline_ref": "references/qwen-code-baseline.json",
     "version_ref": "build/version.json",
-    "tested_version": "0.21.0",
+    "tested_version": "0.21.1",
     "package": "@qwen-code/qwen-code",
-    "release_tag": "v0.21.0",
+    "release_tag": "v0.21.1",
     "documentation": [
       "docs/users/configuration/settings.md",
+      "docs/users/features/approval-mode.md",
+      "docs/users/features/hooks.md",
+      "docs/users/features/mcp.md",
+      "docs/users/features/memory.md",
       "docs/users/extension/introduction.md",
       "docs/users/features/skills.md",
       "docs/users/features/sub-agents.md"
@@ -68,13 +72,26 @@
     "target_must_equal_qwen_home": true
   },
   "software_install": {
-    "tested_version": "0.21.0",
+    "tested_version": "0.21.1",
     "node_requires": ">=22.0.0",
-    "supported_platforms": ["macos", "linux"],
+    "supported_hosts": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "unsupported_categories": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "ubuntu_version_floor": null,
+    "vendor_platforms": ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"],
     "installer": {
       "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
       "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-      "argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
+      "argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
       "environment": "minimal-allowlist-target-owned-qwen-install-root",
       "archive_verification": "official SHA256SUMS"
     },
@@ -99,7 +116,8 @@
     "commands": {
       "status": "python3 cli-tools/nddev_qwen_code.py software-status --target <absolute-target> [--json]",
       "install": "python3 cli-tools/nddev_qwen_code.py install-cli --target <absolute-target> [--json]",
-      "update": "python3 cli-tools/nddev_qwen_code.py update-cli --target <absolute-target> [--json]"
+      "update": "python3 cli-tools/nddev_qwen_code.py update-cli --target <absolute-target> [--json]",
+      "remove": "python3 cli-tools/nddev_qwen_code.py remove-cli --target <absolute-target> [--json]"
     }
   },
   "builder_extension": {

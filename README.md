@@ -6,7 +6,7 @@ absolute target and preserves unrelated authentication, model-provider, MCP, and
 runtime state.
 
 This build targets the canonical Qwen Code CLI from `QwenLM/qwen-code`, package
-identity `@qwen-code/qwen-code`, binary `qwen`, version `0.21.0`.
+identity `@qwen-code/qwen-code`, binary `qwen`, version `0.21.1`.
 
 ## Owned state
 
@@ -14,6 +14,8 @@ The setup lifecycle manages:
 
 - `settings.json`
 - `QWEN.md`
+- `AGENTS.md`
+- `CLAUDE.md`
 - `extensions/nddev-builder/`
 - `NDDEV-QWEN-CODE-SETUP.json`
 
@@ -41,6 +43,10 @@ extensions/nddev-builder/agents/qwen-builder-reviewer.md
 
 No Qwen marketplace manifest is shipped because Qwen Code's current native
 extension package is the `qwen-extension.json` directory format.
+
+`QWEN.md` is the authoritative managed instruction file. `AGENTS.md` and
+`CLAUDE.md` are compatibility pointers to that authority and do not duplicate
+setup policy.
 
 ## Setup lifecycle
 
@@ -79,12 +85,14 @@ python3 cli-tools/nddev_qwen_code.py install-cli \
   --target /absolute/path/to/qwen-home
 python3 cli-tools/nddev_qwen_code.py update-cli \
   --target /absolute/path/to/qwen-home
+python3 cli-tools/nddev_qwen_code.py remove-cli \
+  --target /absolute/path/to/qwen-home
 python3 cli-tools/nddev_qwen_code.py launch \
   --target /absolute/path/to/qwen-home -- --version
 ```
 
 `install-cli` downloads the pinned official standalone installer, verifies its
-SHA-256, and invokes it with `--method standalone --version 0.21.0
+SHA-256, and invokes it with `--method standalone --version 0.21.1
 --no-modify-path` inside a same-parent staging directory with isolated
 `QWEN_INSTALL_ROOT`, `HOME`, XDG directories, temp directories, and a controlled
 system `PATH`. The installer performs the official `SHA256SUMS` archive
@@ -101,6 +109,12 @@ ambient `PATH`; it executes `<target>/bin/qwen` with target-owned
 directories. Launch forwards ordinary child arguments, but rejects official
 Qwen Code arguments that override the managed target, configuration, extension,
 MCP, tool, sandbox, authentication, session, telemetry, or logging scope.
+
+Target-owned software install/update/remove/launch is supported on macOS
+arm64/x64 and Ubuntu glibc arm64/x64. Upstream artifact names remain the
+official `darwin-*` and `linux-*` assets recorded in
+`references/qwen-code-baseline.json`; NDDev does not invent an Ubuntu version
+floor.
 
 ## Public/private boundary
 

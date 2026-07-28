@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -17,6 +19,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,7 +32,7 @@ VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
 PRODUCT_NAME = "nddev-qwen-code-app"
 STAMP_NAME = "NDDEV-QWEN-CODE-SETUP.json"
 BACKUP_NAME = "NDDEV-QWEN-CODE-BACKUP.json"
-MANAGED_FILES = ("settings.json", "QWEN.md")
+MANAGED_FILES = ("settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md")
 BUILDER_FILES = (
     "extensions/nddev-builder/qwen-extension.json",
     "extensions/nddev-builder/QWEN.md",
@@ -43,12 +46,11 @@ METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 PROCESS_OUTPUT_MAX_BYTES = 256 * 1024
 PROCESS_TIMEOUT_SECONDS = 120
-TESTED_QWEN_CODE_VERSION = "0.21.0"
+TESTED_QWEN_CODE_VERSION = "0.21.1"
 QWEN_CODE_PACKAGE = "@qwen-code/qwen-code"
 QWEN_COMMAND = "qwen"
 INSTALLER_URL = (
-    "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/"
-    "install-qwen-standalone.sh"
+    "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh"
 )
 INSTALLER_SHA256 = "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638"
 INSTALLER_ARGV = (
@@ -62,6 +64,18 @@ CONTROLLED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 INSTALLER_MAX_BYTES = 1024 * 1024
 SOFTWARE_TREE_MAX_BYTES = 1024 * 1024 * 1024
 SOFTWARE_TREE_MAX_PATHS = 100000
+CONTROL_ROOT_ENV = "NDDEV_QWEN_CODE_CONTROL_ROOT"
+CONTROL_ROOT_RELATIVE = Path(".nddev") / "qwen-code"
+PRODUCT_ANCHOR_NAME = "product.lock"
+TARGET_ANCHOR_DIRECTORY = "targets"
+TARGET_ANCHOR_SUFFIX = ".lock"
+ANCHOR_PUBLICATION_PREFIX = ".nddev-qwen-code-publish-"
+CLEANUP_DIRECTORY_NAME = "cleanup"
+CLEANUP_PREPARE_NAME = "prepare.json"
+CLEANUP_JOURNAL_NAME = "pending.json"
+CLEANUP_TOMBSTONE_DIRECTORY = "tombstones"
+CLEANUP_MAX_TREE_ENTRIES = 2048
+CLEANUP_MAX_SERIALIZED_BYTES = 1024 * 1024
 SOFTWARE_DIR_RELATIVE = Path("lib") / "qwen-code"
 SOFTWARE_MANIFEST_RELATIVE = Path("software") / "qwen-code.json"
 SOFTWARE_REPLACE_PATHS = (
@@ -211,12 +225,34 @@ class ConcurrentTargetChange(QwenCodeSetupError):
     """A fail-closed target race."""
 
 
+class CleanupPending(QwenCodeSetupError):
+    """A valid post-commit cleanup state remains."""
+
+
+class JsonArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that emits one JSON error when --json is requested."""
+
+    def error(self, message: str) -> NoReturn:
+        if "--json" in sys.argv[1:]:
+            print(json.dumps({"schema_version": 1, "error": message}, sort_keys=True))
+            raise SystemExit(2)
+        super().error(message)
+
+
 @dataclass(frozen=True)
 class FileSnapshot:
     digest: str
     mode: int
     inode: tuple[int, int]
     owner: int | None
+
+
+@dataclass(frozen=True)
+class HostModel:
+    product_host_id: str
+    vendor_os: str
+    vendor_arch: str
+    unsupported_category: str | None = None
 
 
 def fail(message: str) -> NoReturn:
@@ -241,6 +277,74 @@ def identity_of(info: os.stat_result) -> tuple[int, int]:
 
 def owner_of(info: os.stat_result) -> int | None:
     return info.st_uid if hasattr(info, "st_uid") else None
+
+
+def mode_of(info: os.stat_result) -> int:
+    return stat.S_IMODE(info.st_mode)
+
+
+def current_uid() -> int | None:
+    return os.geteuid() if hasattr(os, "geteuid") else None
+
+
+def parse_os_release(content: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def normalize_architecture(machine: str) -> str | None:
+    normalized = machine.lower()
+    if normalized in {"arm64", "aarch64"}:
+        return "arm64"
+    if normalized in {"x86_64", "amd64"}:
+        return "x64"
+    return None
+
+
+def classify_supported_host(
+    *,
+    system_name: str | None = None,
+    machine_name: str | None = None,
+    os_release_content: str | None = None,
+    libc_name: str | None = None,
+) -> HostModel:
+    system_value = system_name or platform.system()
+    arch = normalize_architecture(machine_name or platform.machine())
+    if arch is None:
+        return HostModel("", "", "", "unsupported-architecture")
+    if system_value == "Darwin":
+        return HostModel(f"macos-{arch}", "darwin", arch)
+    if system_value != "Linux":
+        category = "windows" if system_value == "Windows" else "unsupported-host"
+        return HostModel("", "", "", category)
+    if os_release_content is None:
+        try:
+            os_release_content = Path("/etc/os-release").read_text(encoding="utf-8")
+        except OSError:
+            os_release_content = ""
+    os_release = parse_os_release(os_release_content)
+    if os_release.get("ID") != "ubuntu":
+        return HostModel("", "", "", "non-ubuntu-linux")
+    libc_value = libc_name if libc_name is not None else platform.libc_ver()[0]
+    if libc_value != "glibc":
+        return HostModel("", "", "", "linux-musl")
+    return HostModel(f"ubuntu-glibc-{arch}", "linux", arch)
+
+
+def preflight_supported_host() -> HostModel:
+    model = classify_supported_host()
+    if model.unsupported_category is not None:
+        fail(f"unsupported host for Qwen Code lifecycle: {model.unsupported_category}")
+    return model
 
 
 def is_owner_only_file(info: os.stat_result) -> bool:
@@ -269,14 +373,20 @@ def require_directory(path: Path, label: str) -> os.stat_result:
     return info
 
 
-def require_regular_file(path: Path, label: str, *, owner_only: bool = False) -> os.stat_result:
+def require_regular_file(
+    path: Path,
+    label: str,
+    *,
+    owner_only: bool = False,
+    allow_hardlinks: bool = False,
+) -> os.stat_result:
     try:
         info = path.lstat()
     except FileNotFoundError:
         fail(f"{label} is missing")
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
         fail(f"{label} must be a regular non-symlink file")
-    if info.st_nlink != 1:
+    if info.st_nlink != 1 and not allow_hardlinks:
         fail(f"{label} must not have hard-link aliases")
     if owner_only and not is_owner_only_file(info):
         fail(f"{label} must be owned by the current user with mode 0600")
@@ -285,14 +395,261 @@ def require_regular_file(path: Path, label: str, *, owner_only: bool = False) ->
     return info
 
 
+def fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def open_no_follow(path: Path, flags: int, mode: int | None = None) -> int:
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if mode is None:
+        return os.open(path, flags)
+    return os.open(path, flags, mode)
+
+
+def control_root_path() -> Path:
+    configured = os.environ.get(CONTROL_ROOT_ENV)
+    if configured:
+        root = Path(configured).expanduser()
+        if not root.is_absolute():
+            fail(f"{CONTROL_ROOT_ENV} must be an absolute path")
+        return root
+    return Path.home() / CONTROL_ROOT_RELATIVE
+
+
+def ensure_private_directory_component(path: Path) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        parent = path.parent
+        require_directory(parent, f"{path.name} parent")
+        path.mkdir(mode=OWNER_DIRECTORY_MODE)
+        path.chmod(OWNER_DIRECTORY_MODE)
+        fsync_directory(parent)
+        info = path.lstat()
+    if not is_owner_private_directory(info):
+        fail(f"{path} must be a private manager-owned directory")
+
+
+def require_control_root(*, create: bool) -> Path | None:
+    root = control_root_path()
+    try:
+        info = root.lstat()
+    except FileNotFoundError:
+        if not create:
+            return None
+        parents = [root]
+        cursor = root.parent
+        while not cursor.exists():
+            parents.append(cursor)
+            cursor = cursor.parent
+        require_directory(cursor, "control root ancestor")
+        for directory in reversed(parents):
+            directory.mkdir(mode=OWNER_DIRECTORY_MODE)
+            directory.chmod(OWNER_DIRECTORY_MODE)
+            fsync_directory(directory.parent)
+        info = root.lstat()
+    if not is_owner_private_directory(info):
+        fail(f"Qwen Code control root must be a private manager-owned directory: {root}")
+    return root
+
+
+def product_anchor_path(root: Path) -> Path:
+    return root / PRODUCT_ANCHOR_NAME
+
+
+def target_digest(target: Path) -> str:
+    return sha256_bytes(str(target).encode("utf-8"))
+
+
+def target_anchor_path(root: Path, target: Path) -> Path:
+    return root / TARGET_ANCHOR_DIRECTORY / f"{target_digest(target)}{TARGET_ANCHOR_SUFFIX}"
+
+
+def cleanup_root_path(root: Path, target: Path) -> Path:
+    return root / CLEANUP_DIRECTORY_NAME / target_digest(target)
+
+
+def anchor_payload(kind: str, *, target: Path | None = None) -> bytes:
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "product_name": PRODUCT_NAME,
+        "kind": kind,
+    }
+    if target is not None:
+        payload["canonical_target"] = str(target)
+        payload["target_digest"] = target_digest(target)
+    return canonical_json(payload)
+
+
+def validate_anchor_content(path: Path, content: bytes, kind: str, target: Path | None) -> None:
+    value = parse_json_object(content, f"coordination anchor {path}")
+    expected = {"schema_version", "product_name", "kind"}
+    if target is not None:
+        expected |= {"canonical_target", "target_digest"}
+    require_exact_keys(value, expected, f"coordination anchor {path}")
+    if value["schema_version"] != 1 or value["product_name"] != PRODUCT_NAME:
+        fail(f"coordination anchor {path} identity or schema is invalid")
+    if value["kind"] != kind:
+        fail(f"coordination anchor {path} kind mismatch")
+    if target is not None and (
+        value["canonical_target"] != str(target) or value["target_digest"] != target_digest(target)
+    ):
+        fail(f"coordination anchor {path} target binding mismatch")
+
+
+def publication_aliases_for(path: Path, info: os.stat_result) -> list[Path]:
+    aliases: list[Path] = []
+    try:
+        entries = sorted(path.parent.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        fail(f"cannot enumerate coordination namespace {path.parent}: {exc}")
+    prefix = f"{ANCHOR_PUBLICATION_PREFIX}{path.name}."
+    for entry in entries:
+        if not entry.name.startswith(prefix) or not entry.name.endswith(".tmp"):
+            continue
+        try:
+            entry_info = entry.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(entry_info.st_mode) and identity_of(entry_info) == identity_of(info):
+            aliases.append(entry)
+    return aliases
+
+
+def validate_anchor_path(
+    path: Path,
+    *,
+    kind: str,
+    target: Path | None = None,
+    recover_alias: bool = False,
+) -> os.stat_result:
+    content, info = read_regular_file(
+        path,
+        f"coordination anchor {path}",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+        allow_hardlinks=True,
+    )
+    validate_anchor_content(path, content, kind, target)
+    if info.st_nlink != 1:
+        if not recover_alias:
+            fail(f"coordination anchor {path} has an incomplete publication alias")
+        aliases = publication_aliases_for(path, info)
+        if len(aliases) != 1 or info.st_nlink != 2:
+            fail(f"coordination anchor {path} has unknown hard-link aliases")
+        aliases[0].unlink()
+        fsync_directory(path.parent)
+        content, info = read_regular_file(
+            path,
+            f"coordination anchor {path}",
+            owner_only=True,
+            max_bytes=METADATA_MAX_BYTES,
+            allow_hardlinks=True,
+        )
+        validate_anchor_content(path, content, kind, target)
+        if info.st_nlink != 1:
+            fail(f"coordination anchor {path} alias recovery did not converge")
+    return info
+
+
+def publish_no_replace_file(
+    path: Path, content: bytes, *, max_bytes: int = METADATA_MAX_BYTES
+) -> None:
+    if len(content) > max_bytes:
+        fail(f"machine-owned file {path} exceeds the {max_bytes}-byte bound")
+    ensure_private_directory_component(path.parent)
+    temporary = path.parent / (
+        f"{ANCHOR_PUBLICATION_PREFIX}{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    descriptor = open_no_follow(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        OWNER_FILE_MODE,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.fchmod(stream.fileno(), OWNER_FILE_MODE)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            temporary.unlink()
+            fsync_directory(path.parent)
+            return
+        except OSError as exc:
+            temporary.unlink()
+            fsync_directory(path.parent)
+            raise QwenCodeSetupError(f"coordination anchor publication failed: {exc}") from exc
+        try:
+            temporary.unlink()
+        finally:
+            fsync_directory(path.parent)
+    finally:
+        if path_exists_no_follow(temporary):
+            try:
+                temporary.unlink()
+                fsync_directory(temporary.parent)
+            except OSError:
+                pass
+
+
+@contextlib.contextmanager
+def anchor_lock(
+    path: Path,
+    *,
+    kind: str,
+    target: Path | None,
+    exclusive: bool,
+    create: bool,
+) -> Iterator[None]:
+    if create:
+        publish_no_replace_file(path, anchor_payload(kind, target=target))
+    validate_anchor_path(path, kind=kind, target=target, recover_alias=exclusive)
+    descriptor = open_no_follow(path, os.O_RDWR)
+    try:
+        opened = os.fstat(descriptor)
+        current = validate_anchor_path(path, kind=kind, target=target, recover_alias=exclusive)
+        if identity_of(opened) != identity_of(current):
+            fail_concurrent(f"coordination anchor {path} changed during open")
+        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        locked = os.fstat(descriptor)
+        if identity_of(locked) != identity_of(current):
+            fail_concurrent(f"coordination anchor {path} changed during lock")
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def read_regular_file(
     path: Path,
     label: str,
     *,
     owner_only: bool = False,
     max_bytes: int = MANAGED_PAYLOAD_MAX_BYTES,
+    allow_hardlinks: bool = False,
 ) -> tuple[bytes, os.stat_result]:
-    before = require_regular_file(path, label, owner_only=owner_only)
+    before = require_regular_file(
+        path,
+        label,
+        owner_only=owner_only,
+        allow_hardlinks=allow_hardlinks,
+    )
     if before.st_size > max_bytes:
         fail(f"{label} exceeds the {max_bytes}-byte size limit")
     flags = os.O_RDONLY
@@ -305,7 +662,7 @@ def read_regular_file(
         opened = os.fstat(descriptor)
         if identity_of(opened) != identity_of(before):
             fail_concurrent(f"{label} changed while it was being opened")
-        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_nlink != 1 and not allow_hardlinks):
             fail(f"{label} changed to an unsafe file")
         if owner_only and not is_owner_only_file(opened):
             fail(f"{label} must be owned by the current user with mode 0600")
@@ -322,7 +679,12 @@ def read_regular_file(
         after = os.fstat(descriptor)
     finally:
         os.close(descriptor)
-    final = require_regular_file(path, label, owner_only=owner_only)
+    final = require_regular_file(
+        path,
+        label,
+        owner_only=owner_only,
+        allow_hardlinks=allow_hardlinks,
+    )
     if identity_of(after) != identity_of(before) or identity_of(final) != identity_of(before):
         fail_concurrent(f"{label} changed while it was being read")
     return b"".join(chunks), final
@@ -462,13 +824,12 @@ def render_setup(setup_id: str) -> tuple[dict[str, Any], dict[str, bytes]]:
     )
     settings = parse_json_object(settings_content, f"setup {setup_id}/settings.json")
     validate_setup_settings(setup_id, settings)
-    qwen_content, _ = read_regular_file(setup_root / "QWEN.md", f"setup {setup_id}/QWEN.md")
-    ensure_lf_text(qwen_content, f"setup {setup_id}/QWEN.md")
-    return metadata, {
-        "settings.json": canonical_json(settings),
-        "QWEN.md": qwen_content,
-        **render_builder(),
-    }
+    rendered: dict[str, bytes] = {"settings.json": canonical_json(settings)}
+    for name in ("QWEN.md", "AGENTS.md", "CLAUDE.md"):
+        content, _ = read_regular_file(setup_root / name, f"setup {setup_id}/{name}")
+        ensure_lf_text(content, f"setup {setup_id}/{name}")
+        rendered[name] = content
+    return metadata, {**rendered, **render_builder()}
 
 
 def list_setups() -> list[dict[str, Any]]:
@@ -492,20 +853,29 @@ def list_setups() -> list[dict[str, Any]]:
     return entries
 
 
-def resolve_target(raw_target: str) -> Path:
+def validate_lexical_target(raw_target: str) -> Path:
     expanded = Path(raw_target).expanduser()
     if not expanded.is_absolute():
         fail("--target must be an absolute path")
+    target = Path(os.path.normpath(str(expanded)))
+    if target == Path(target.anchor):
+        fail("filesystem root cannot be a target")
+    return target
+
+
+def canonicalize_target(lexical_target: Path) -> Path:
     try:
-        raw_info = expanded.lstat()
+        raw_info = lexical_target.lstat()
     except FileNotFoundError:
         raw_info = None
     if raw_info is not None and stat.S_ISLNK(raw_info.st_mode):
         fail("--target must not be a symlink")
-    target = expanded.resolve(strict=False)
-    if target == Path(target.anchor):
-        fail("filesystem root cannot be a target")
-    parent = target.parent
+    raw_parent = lexical_target.parent
+    try:
+        parent = raw_parent.resolve(strict=True)
+    except FileNotFoundError:
+        fail("--target parent must already exist")
+    target = parent / lexical_target.name
     try:
         parent_info = parent.lstat()
     except FileNotFoundError:
@@ -517,6 +887,10 @@ def resolve_target(raw_target: str) -> Path:
         if stat.S_ISLNK(target_info.st_mode) or not stat.S_ISDIR(target_info.st_mode):
             fail("--target must be a real directory when it exists")
     return target
+
+
+def resolve_target(raw_target: str) -> Path:
+    return canonicalize_target(validate_lexical_target(raw_target))
 
 
 def ensure_private_directory(path: Path, *, create: bool) -> bool:
@@ -531,6 +905,29 @@ def ensure_private_directory(path: Path, *, create: bool) -> bool:
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         fail(f"{path} must be a real directory")
     return True
+
+
+def create_or_require_private_child_directory(root: Path, relative: Path) -> Path:
+    if relative.is_absolute() or ".." in relative.parts:
+        fail(f"private directory path escapes target: {relative}")
+    cursor = root
+    require_directory(cursor, "private directory root")
+    for part in relative.parts:
+        cursor = cursor / part
+        try:
+            info = cursor.lstat()
+        except FileNotFoundError:
+            cursor.mkdir(mode=OWNER_DIRECTORY_MODE)
+            cursor.chmod(OWNER_DIRECTORY_MODE)
+            fsync_directory(cursor.parent)
+            info = cursor.lstat()
+        if not is_owner_private_directory(info):
+            fail(f"private directory must be a real owner-only directory: {cursor}")
+    try:
+        cursor.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except ValueError:
+        fail(f"private directory escaped target: {cursor}")
+    return cursor
 
 
 def require_private_target_directory_for_software(target: Path, *, allow_missing: bool) -> bool:
@@ -714,6 +1111,8 @@ def settings_managed_intact(current: bytes, setup_id: str) -> bool:
 
 
 def inspect_target(target: Path) -> dict[str, Any]:
+    root = require_control_root(create=False)
+    cleanup_pending = cleanup_pending_for_target(root, target, read_only=True)
     if not ensure_private_directory(target, create=False):
         return {
             "state": "missing",
@@ -722,6 +1121,7 @@ def inspect_target(target: Path) -> dict[str, Any]:
             "drift": [],
             "unmanaged_managed_paths": [],
             "builder_extension": "missing",
+            "cleanup_pending": cleanup_pending,
         }
     stamp = load_stamp(target)
     existing: list[str] = []
@@ -740,6 +1140,7 @@ def inspect_target(target: Path) -> dict[str, Any]:
             "builder_extension": "present"
             if (target / "extensions" / "nddev-builder").exists()
             else "missing",
+            "cleanup_pending": cleanup_pending,
         }
     expected = validate_digest_map(stamp["managed_paths"], "managed stamp managed_paths")
     drift: list[str] = []
@@ -775,6 +1176,7 @@ def inspect_target(target: Path) -> dict[str, Any]:
         "builder_extension": "present"
         if not any(name in drift for name in BUILDER_FILES)
         else "drift",
+        "cleanup_pending": cleanup_pending,
     }
 
 
@@ -797,30 +1199,325 @@ def lock_path(target: Path) -> Path:
 
 @contextlib.contextmanager
 def target_lock(target: Path) -> Iterator[None]:
-    lock = lock_path(target)
-    require_directory(target.parent, "canonical --target parent")
-    try:
-        lock.mkdir(mode=OWNER_DIRECTORY_MODE)
-        lock.chmod(OWNER_DIRECTORY_MODE)
-        (lock / "owner.json").write_bytes(
-            canonical_json({"schema_version": 1, "pid": os.getpid(), "target": str(target)})
+    del target
+    yield
+
+
+def cleanup_namespace_paths(root: Path, target: Path) -> dict[str, Path]:
+    cleanup_root = cleanup_root_path(root, target)
+    return {
+        "root": cleanup_root,
+        "prepare": cleanup_root / CLEANUP_PREPARE_NAME,
+        "pending": cleanup_root / CLEANUP_JOURNAL_NAME,
+        "tombstones": cleanup_root / CLEANUP_TOMBSTONE_DIRECTORY,
+    }
+
+
+def ensure_cleanup_namespace(root: Path, target: Path) -> dict[str, Path]:
+    paths = cleanup_namespace_paths(root, target)
+    ensure_private_directory_component(root / CLEANUP_DIRECTORY_NAME)
+    ensure_private_directory_component(paths["root"])
+    ensure_private_directory_component(paths["tombstones"])
+    return paths
+
+
+def validate_relative_name(name: str, label: str) -> Path:
+    if not isinstance(name, str) or not name:
+        fail(f"{label} must be a non-empty relative path")
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts or "." in relative.parts:
+        fail(f"{label} must be bounded and relative")
+    return relative
+
+
+def cleanup_tree_record(path: Path, base: Path, counter: dict[str, int]) -> dict[str, Any]:
+    counter["entries"] += 1
+    if counter["entries"] > CLEANUP_MAX_TREE_ENTRIES:
+        fail(f"cleanup tree exceeds {CLEANUP_MAX_TREE_ENTRIES} entries")
+    info = path.lstat()
+    relative = "." if path == base else str(path.relative_to(base))
+    common: dict[str, Any] = {
+        "path": relative,
+        "mode": mode_of(info),
+        "uid": owner_of(info),
+        "nlink": info.st_nlink,
+        "dev": info.st_dev,
+        "ino": info.st_ino,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+    }
+    if stat.S_ISLNK(info.st_mode):
+        fail("cleanup tombstone must not contain symlinks")
+    if stat.S_ISREG(info.st_mode):
+        content, reopened = read_regular_file(path, f"cleanup source {relative}", owner_only=False)
+        if identity_of(reopened) != identity_of(info):
+            fail_concurrent(f"cleanup source changed during snapshot: {path}")
+        common.update({"type": "file", "sha256": sha256_bytes(content)})
+        return common
+    if stat.S_ISDIR(info.st_mode):
+        if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+            fail("cleanup directory must be owned by the current user")
+        children = sorted(child.name for child in path.iterdir())
+        common.update({"type": "directory", "children": children})
+        return common
+    fail("cleanup source has unsupported file type")
+
+
+def snapshot_cleanup_tree(path: Path) -> list[dict[str, Any]]:
+    if not path_exists_no_follow(path):
+        fail(f"cleanup source is missing: {path}")
+    records: list[dict[str, Any]] = []
+    counter = {"entries": 0}
+    records.append(cleanup_tree_record(path, path, counter))
+    if path.is_dir() and not path.is_symlink():
+        for child in sorted(path.rglob("*"), key=lambda item: str(item.relative_to(path))):
+            records.append(cleanup_tree_record(child, path, counter))
+    encoded = canonical_json(records)
+    if len(encoded) > CLEANUP_MAX_SERIALIZED_BYTES:
+        fail(f"cleanup journal exceeds {CLEANUP_MAX_SERIALIZED_BYTES} serialized bytes")
+    return records
+
+
+def validate_cleanup_document(value: dict[str, Any], target: Path, label: str) -> None:
+    require_exact_keys(
+        value,
+        {
+            "schema_version",
+            "product_name",
+            "canonical_target",
+            "target_digest",
+            "entries",
+        },
+        label,
+    )
+    if (
+        value["schema_version"] != 1
+        or value["product_name"] != PRODUCT_NAME
+        or value["canonical_target"] != str(target)
+        or value["target_digest"] != target_digest(target)
+    ):
+        fail(f"{label} identity or target binding is invalid")
+    entries = value["entries"]
+    if not isinstance(entries, list) or len(entries) > CLEANUP_MAX_TREE_ENTRIES:
+        fail(f"{label} entries are invalid")
+    seen_names: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            fail(f"{label} entries must be objects")
+        require_exact_keys(entry, {"name", "reason", "records"}, f"{label} entry")
+        name = entry["name"]
+        validate_relative_name(name, f"{label} entry name")
+        if name in seen_names:
+            fail(f"{label} contains duplicate entry {name}")
+        seen_names.add(name)
+        if not isinstance(entry["reason"], str) or not entry["reason"]:
+            fail(f"{label} entry reason must be non-empty")
+        records = entry["records"]
+        if not isinstance(records, list) or not records:
+            fail(f"{label} entry records must be non-empty")
+        record_paths = [record.get("path") for record in records if isinstance(record, dict)]
+        if record_paths[0:1] != ["."] or len(record_paths) != len(records):
+            fail(f"{label} entry records are malformed")
+        if len(set(record_paths)) != len(record_paths):
+            fail(f"{label} entry records contain duplicates")
+
+
+def recover_cleanup_publication_alias(path: Path, info: os.stat_result) -> None:
+    aliases = publication_aliases_for(path, info)
+    if len(aliases) != 1 or info.st_nlink != 2:
+        fail(f"cleanup journal has unknown hard-link aliases: {path}")
+    aliases[0].unlink()
+    fsync_directory(path.parent)
+
+
+def load_cleanup_document(
+    path: Path,
+    target: Path,
+    label: str,
+    *,
+    recover_alias: bool = False,
+) -> dict[str, Any]:
+    content, info = read_regular_file(
+        path,
+        label,
+        owner_only=True,
+        max_bytes=CLEANUP_MAX_SERIALIZED_BYTES,
+        allow_hardlinks=True,
+    )
+    if info.st_nlink != 1:
+        if not recover_alias:
+            fail(f"{label} has incomplete no-replace publication")
+        recover_cleanup_publication_alias(path, info)
+        content, info = read_regular_file(
+            path,
+            label,
+            owner_only=True,
+            max_bytes=CLEANUP_MAX_SERIALIZED_BYTES,
         )
-        (lock / "owner.json").chmod(OWNER_FILE_MODE)
-    except FileExistsError:
-        fail(f"target is locked: {lock}")
+        if info.st_nlink != 1:
+            fail(f"{label} alias recovery did not converge")
+    value = parse_json_object(content, label)
+    validate_cleanup_document(value, target, label)
+    return value
+
+
+def cleanup_pending_for_target(root: Path | None, target: Path, *, read_only: bool) -> bool:
+    if root is None:
+        return False
+    paths = cleanup_namespace_paths(root, target)
+    cleanup_root = paths["root"]
+    if not path_exists_no_follow(cleanup_root):
+        return False
+    info = require_directory(cleanup_root, "cleanup namespace")
+    if not is_owner_private_directory(info):
+        fail("cleanup namespace must be private and manager-owned")
+    allowed = {CLEANUP_PREPARE_NAME, CLEANUP_JOURNAL_NAME, CLEANUP_TOMBSTONE_DIRECTORY}
+    entries = {entry.name for entry in cleanup_root.iterdir()}
+    publication_alias_names = {
+        name
+        for name in entries
+        if (
+            name.startswith(f"{ANCHOR_PUBLICATION_PREFIX}{CLEANUP_JOURNAL_NAME}.")
+            or name.startswith(f"{ANCHOR_PUBLICATION_PREFIX}{CLEANUP_PREPARE_NAME}.")
+        )
+        and name.endswith(".tmp")
+    }
+    if read_only and publication_alias_names:
+        fail(
+            "cleanup namespace contains unknown entries: "
+            + ", ".join(sorted(publication_alias_names))
+        )
+    unknown = sorted(entries - allowed - publication_alias_names)
+    if unknown:
+        fail(f"cleanup namespace contains unknown entries: {', '.join(unknown)}")
+    if path_exists_no_follow(paths["prepare"]):
+        if read_only:
+            fail("cleanup prepare intent is pending")
+        return True
+    if not path_exists_no_follow(paths["pending"]):
+        return False
+    load_cleanup_document(
+        paths["pending"],
+        target,
+        "cleanup journal",
+        recover_alias=not read_only,
+    )
+    return True
+
+
+def unlink_tree_bottom_up(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        fsync_directory(path.parent)
+        return
+    if not path.is_dir():
+        fail(f"cleanup tombstone has unsupported type: {path}")
+    for child in sorted(path.iterdir(), key=lambda item: len(item.parts), reverse=True):
+        unlink_tree_bottom_up(child)
+    path.rmdir()
+    fsync_directory(path.parent)
+
+
+def drain_cleanup(root: Path, target: Path, *, read_only: bool) -> bool:
+    pending = cleanup_pending_for_target(root, target, read_only=read_only)
+    if not pending or read_only:
+        return pending
+    paths = cleanup_namespace_paths(root, target)
+    if path_exists_no_follow(paths["prepare"]) and not path_exists_no_follow(paths["pending"]):
+        prepare = load_cleanup_document(
+            paths["prepare"],
+            target,
+            "cleanup prepare intent",
+            recover_alias=True,
+        )
+        journal_content = canonical_json(prepare)
+        publish_no_replace_file(
+            paths["pending"],
+            journal_content,
+            max_bytes=CLEANUP_MAX_SERIALIZED_BYTES,
+        )
+        fsync_directory(paths["root"])
+    journal = load_cleanup_document(
+        paths["pending"],
+        target,
+        "cleanup journal",
+        recover_alias=True,
+    )
+    tombstone_root = paths["tombstones"]
+    require_directory(tombstone_root, "cleanup tombstone parent")
+    declared = {entry["name"] for entry in journal["entries"]}
+    present = {entry.name for entry in tombstone_root.iterdir()}
+    unknown = sorted(present - declared)
+    if unknown:
+        fail(f"cleanup tombstone parent contains unknown entries: {', '.join(unknown)}")
+    for entry in journal["entries"]:
+        tombstone = tombstone_root / entry["name"]
+        if path_exists_no_follow(tombstone):
+            unlink_tree_bottom_up(tombstone)
+    if any(tombstone_root.iterdir()):
+        fail("cleanup tombstone parent did not drain completely")
+    with contextlib.suppress(FileNotFoundError):
+        paths["pending"].unlink()
+        fsync_directory(paths["root"])
+    with contextlib.suppress(FileNotFoundError):
+        paths["prepare"].unlink()
+        fsync_directory(paths["root"])
+    return False
+
+
+def publish_cleanup_document(path: Path, value: dict[str, Any]) -> None:
+    if path_exists_no_follow(path):
+        fail(f"cleanup document already exists: {path}")
+    content = canonical_json(value)
+    if len(content) > CLEANUP_MAX_SERIALIZED_BYTES:
+        fail(f"cleanup document exceeds {CLEANUP_MAX_SERIALIZED_BYTES} serialized bytes")
+    publish_no_replace_file(path, content, max_bytes=CLEANUP_MAX_SERIALIZED_BYTES)
+
+
+def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) -> bool:
+    if not path_exists_no_follow(path):
+        return False
+    paths = ensure_cleanup_namespace(root, target)
+    tombstone_name = f"{reason}-{os.getpid()}-{time.time_ns()}-{uuid.uuid4().hex}"
+    validate_relative_name(tombstone_name, "cleanup tombstone name")
+    tombstone = paths["tombstones"] / tombstone_name
+    records = snapshot_cleanup_tree(path)
+    document = {
+        "schema_version": 1,
+        "product_name": PRODUCT_NAME,
+        "canonical_target": str(target),
+        "target_digest": target_digest(target),
+        "entries": [{"name": tombstone_name, "reason": reason, "records": records}],
+    }
+    publish_cleanup_document(paths["prepare"], document)
     try:
-        yield
-    finally:
-        try:
-            owner = lock / "owner.json"
-            if owner.exists() and not owner.is_symlink():
-                owner.unlink()
-            lock.rmdir()
-        except OSError as exc:
-            raise QwenCodeSetupError(f"target lock cleanup failed: {lock}") from exc
+        path.rename(tombstone)
+        fsync_directory(path.parent)
+        fsync_directory(tombstone.parent)
+        publish_cleanup_document(paths["pending"], document)
+        fsync_directory(paths["root"])
+        with contextlib.suppress(FileNotFoundError):
+            paths["prepare"].unlink()
+            fsync_directory(paths["root"])
+    except BaseException:
+        if path_exists_no_follow(tombstone) and not path_exists_no_follow(path):
+            with contextlib.suppress(OSError):
+                tombstone.rename(path)
+                fsync_directory(path.parent)
+                fsync_directory(tombstone.parent)
+        raise
+    try:
+        drain_cleanup(root, target, read_only=False)
+    except BaseException:
+        return True
+    return cleanup_pending_for_target(root, target, read_only=False)
 
 
 def atomic_write(path: Path, content: bytes) -> None:
+    durable_write_file(path, content, OWNER_FILE_MODE)
+
+
+def durable_write_file(path: Path, content: bytes, mode: int) -> None:
     mkdirs_for_file(path)
     if path.exists() or path.is_symlink():
         require_regular_file(path, f"managed path {path}")
@@ -831,9 +1528,10 @@ def atomic_write(path: Path, content: bytes) -> None:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        temp_path.chmod(OWNER_FILE_MODE)
+        temp_path.chmod(mode)
         os.replace(temp_path, path)
-        path.chmod(OWNER_FILE_MODE)
+        path.chmod(mode)
+        fsync_directory(path.parent)
     finally:
         if temp_path.exists():
             temp_path.unlink()
@@ -900,7 +1598,9 @@ def remove_created_target_if_empty(target: Path, existed_before: bool) -> None:
         pass
 
 
-def create_backup(target: Path, exclude: int | None = None) -> tuple[int, dict[str, bytes | None]]:
+def create_backup(
+    target: Path, exclude: int | None = None
+) -> tuple[int, dict[str, bytes | None], bool]:
     pool = backup_pool(target)
     ensure_private_directory(pool, create=True)
     pool.chmod(OWNER_DIRECTORY_MODE)
@@ -951,16 +1651,21 @@ def create_backup(target: Path, exclude: int | None = None) -> tuple[int, dict[s
         destination = pool / str(slot)
         replaced = pool / f".{slot}.replaced"
         if replaced.exists():
-            shutil.rmtree(replaced)
+            fail(f"backup replacement residue already exists: {replaced}")
         if destination.exists():
             destination.rename(replaced)
         staging.rename(destination)
+        fsync_directory(pool)
+        cleanup_pending = False
         if replaced.exists():
-            shutil.rmtree(replaced)
+            root = require_control_root(create=True)
+            cleanup_pending = retire_path_after_commit(root, target, replaced, "backup-rotate")
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if path_exists_no_follow(staging):
+            cleanup_path(staging)
+            fsync_directory(staging.parent)
         raise
-    return slot, desired
+    return slot, desired, cleanup_pending
 
 
 def choose_backup_slot(pool: Path, target: Path, exclude: int | None = None) -> int:
@@ -1086,6 +1791,7 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
         "changes": changes,
         "backup_required": status["state"] == "managed",
         "mutates": False,
+        "cleanup_pending": status["cleanup_pending"],
     }
 
 
@@ -1108,6 +1814,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
             "setup_id": setup_id,
             "changed": [],
             "backup_slot": None,
+            "cleanup_pending": plan["cleanup_pending"],
         }
     existed_before = target.exists()
     with target_lock(target):
@@ -1121,7 +1828,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
         rollback_desired: dict[str, bytes | None] | None = None
         before = snapshot_managed(target, owner_only=True)
         if plan["backup_required"]:
-            backup_slot, rollback_desired = create_backup(target)
+            backup_slot, rollback_desired, backup_cleanup_pending = create_backup(target)
             before = snapshot_managed(target, owner_only=True)
         try:
             ensure_private_directory(target, create=True)
@@ -1149,6 +1856,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
         "setup_id": setup_id,
         "changed": plan["changes"],
         "backup_slot": backup_slot,
+        "cleanup_pending": backup_cleanup_pending if backup_slot is not None else False,
     }
 
 
@@ -1166,7 +1874,9 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         if envelope["source_setup_id"] is None:
             fail("selected backup does not contain a managed Qwen Code setup")
         before = snapshot_managed(target, owner_only=True)
-        rollback_slot, rollback_desired = create_backup(target, exclude=slot)
+        rollback_slot, rollback_desired, backup_cleanup_pending = create_backup(
+            target, exclude=slot
+        )
         try:
             ensure_private_directory(target, create=True)
             replace_managed_state(target, restore_desired, before)
@@ -1183,6 +1893,7 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         "setup_id": envelope["source_setup_id"],
         "restored_backup_slot": slot,
         "rollback_backup_slot": rollback_slot,
+        "cleanup_pending": backup_cleanup_pending,
     }
 
 
@@ -1191,7 +1902,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
     with target_lock(target):
         status = require_clean_managed(target)
         before = snapshot_managed(target, owner_only=True)
-        backup_slot, rollback_desired = create_backup(target)
+        backup_slot, rollback_desired, backup_cleanup_pending = create_backup(target)
         try:
             desired = {name: None for name in MANAGED_PATHS}
             replace_managed_state(target, desired, before)
@@ -1204,6 +1915,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
         "target": str(target),
         "removed_setup_id": status["setup_id"],
         "backup_slot": backup_slot,
+        "cleanup_pending": backup_cleanup_pending,
     }
 
 
@@ -1261,16 +1973,13 @@ def safe_child_base_environment(*, include_path: bool) -> dict[str, str]:
 
 
 def install_stage_environment(stage_root: Path, live_stage: Path) -> dict[str, str]:
-    home = stage_root / "home"
-    tmp = stage_root / "tmp"
-    xdg_config = stage_root / "xdg-config"
-    xdg_cache = stage_root / "xdg-cache"
-    xdg_state = stage_root / "xdg-state"
-    qwen_home = stage_root / "qwen-home"
-    qwen_runtime = stage_root / "qwen-runtime"
-    for directory in (home, tmp, xdg_config, xdg_cache, xdg_state, qwen_home, qwen_runtime):
-        directory.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-        directory.chmod(OWNER_DIRECTORY_MODE)
+    home = create_or_require_private_child_directory(stage_root, Path("home"))
+    tmp = create_or_require_private_child_directory(stage_root, Path("tmp"))
+    xdg_config = create_or_require_private_child_directory(stage_root, Path("xdg-config"))
+    xdg_cache = create_or_require_private_child_directory(stage_root, Path("xdg-cache"))
+    xdg_state = create_or_require_private_child_directory(stage_root, Path("xdg-state"))
+    qwen_home = create_or_require_private_child_directory(stage_root, Path("qwen-home"))
+    qwen_runtime = create_or_require_private_child_directory(stage_root, Path("qwen-runtime"))
     env = safe_child_base_environment(include_path=True)
     env.update(
         {
@@ -1289,14 +1998,11 @@ def install_stage_environment(stage_root: Path, live_stage: Path) -> dict[str, s
 
 
 def launch_environment(target: Path) -> dict[str, str]:
-    runtime = target / "runtime"
-    tmp = runtime / "tmp"
-    xdg_config = runtime / "xdg-config"
-    xdg_cache = runtime / "xdg-cache"
-    xdg_state = runtime / "xdg-state"
-    for directory in (runtime, tmp, xdg_config, xdg_cache, xdg_state):
-        directory.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-        directory.chmod(OWNER_DIRECTORY_MODE)
+    runtime = create_or_require_private_child_directory(target, Path("runtime"))
+    tmp = create_or_require_private_child_directory(target, Path("runtime") / "tmp")
+    xdg_config = create_or_require_private_child_directory(target, Path("runtime") / "xdg-config")
+    xdg_cache = create_or_require_private_child_directory(target, Path("runtime") / "xdg-cache")
+    xdg_state = create_or_require_private_child_directory(target, Path("runtime") / "xdg-state")
     env = safe_child_base_environment(include_path=False)
     env.update(
         {
@@ -1354,8 +2060,7 @@ def download_official_installer(stage_root: Path) -> Path:
     if digest != INSTALLER_SHA256:
         fail("official Qwen Code installer SHA-256 mismatch")
     installer = stage_root / "install-qwen-standalone.sh"
-    installer.write_bytes(content)
-    installer.chmod(0o700)
+    durable_write_file(installer, content, 0o700)
     return installer
 
 
@@ -1394,6 +2099,8 @@ def write_target_relative_qwen_launcher(root: Path) -> None:
             os.fsync(stream.fileno())
         temp_path.chmod(0o700)
         os.replace(temp_path, launcher)
+        launcher.chmod(0o700)
+        fsync_directory(launcher.parent)
     finally:
         if path_exists_no_follow(temp_path):
             cleanup_path(temp_path)
@@ -1537,9 +2244,7 @@ def digest_resolved_symlink_tree(
         for child in entries:
             path_counter["value"] += 1
             if path_counter["value"] > SOFTWARE_TREE_MAX_PATHS:
-                fail(
-                    f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit"
-                )
+                fail(f"installed Qwen Code tree exceeds the {SOFTWARE_TREE_MAX_PATHS}-path limit")
             children.append(
                 {
                     "name": child.name,
@@ -1671,10 +2376,14 @@ def build_software_manifest(root: Path) -> dict[str, Any]:
 
 def software_presence(target: Path) -> dict[str, Any]:
     replace_paths_present = [
-        str(relative) for relative in SOFTWARE_REPLACE_PATHS if path_exists_no_follow(target / relative)
+        str(relative)
+        for relative in SOFTWARE_REPLACE_PATHS
+        if path_exists_no_follow(target / relative)
     ]
     owned_parent_paths_present = [
-        str(relative) for relative in SOFTWARE_PARENT_PATHS if path_exists_no_follow(target / relative)
+        str(relative)
+        for relative in SOFTWARE_PARENT_PATHS
+        if path_exists_no_follow(target / relative)
     ]
     if not replace_paths_present and not owned_parent_paths_present:
         state = "absent"
@@ -1691,6 +2400,8 @@ def software_presence(target: Path) -> dict[str, Any]:
 
 
 def software_status(target: Path) -> dict[str, Any]:
+    root = require_control_root(create=False)
+    cleanup_pending = cleanup_pending_for_target(root, target, read_only=True)
     if not require_private_target_directory_for_software(target, allow_missing=True):
         return {
             "schema_version": 1,
@@ -1704,6 +2415,7 @@ def software_status(target: Path) -> dict[str, Any]:
             "partial": False,
             "replace_paths_present": [],
             "owned_parent_paths_present": [],
+            "cleanup_pending": cleanup_pending,
         }
     presence = software_presence(target)
     executable = qwen_executable(target)
@@ -1717,6 +2429,7 @@ def software_status(target: Path) -> dict[str, Any]:
             "version": None,
             "executable": str(executable),
             **presence,
+            "cleanup_pending": cleanup_pending,
         }
     manifest_path = software_manifest_path(target)
     try:
@@ -1732,6 +2445,7 @@ def software_status(target: Path) -> dict[str, Any]:
             "executable": str(executable),
             **presence,
             "validation_error": str(exc),
+            "cleanup_pending": cleanup_pending,
         }
     try:
         expected = build_software_manifest(target)
@@ -1756,6 +2470,7 @@ def software_status(target: Path) -> dict[str, Any]:
         "package": manifest.get("package"),
         "install_method": manifest.get("install_method"),
         **presence,
+        "cleanup_pending": cleanup_pending,
     }
     if validation_error is not None:
         result["validation_error"] = validation_error
@@ -1882,11 +2597,27 @@ def ensure_replace_parent(destination: Path) -> None:
 def move_replace_path(source: Path, destination: Path) -> None:
     ensure_replace_parent(destination)
     os.replace(source, destination)
+    fsync_directory(destination.parent)
+    fsync_directory(source.parent)
 
 
 def move_old_path(source: Path, saved: Path) -> None:
-    saved.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
+    missing: list[Path] = []
+    cursor = saved.parent
+    while not path_exists_no_follow(cursor):
+        missing.append(cursor)
+        cursor = cursor.parent
+    require_directory(cursor, "software rollback ancestor")
+    for directory in reversed(missing):
+        directory.mkdir(mode=OWNER_DIRECTORY_MODE)
+        directory.chmod(OWNER_DIRECTORY_MODE)
+        fsync_directory(directory.parent)
+    info = require_directory(saved.parent, "software rollback parent")
+    if not is_owner_private_directory(info):
+        fail("software rollback parent must be private to the current user")
     os.replace(source, saved)
+    fsync_directory(source.parent)
+    fsync_directory(saved.parent)
 
 
 def cleanup_path(path: Path) -> None:
@@ -1930,7 +2661,7 @@ def restore_software_paths(
             continue
 
 
-def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) -> None:
+def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) -> bool:
     for relative in SOFTWARE_REPLACE_PATHS:
         source = live_stage / relative
         if not path_exists_no_follow(source):
@@ -1946,6 +2677,7 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
     }
     moved_old: list[Path] = []
     installed_new: list[Path] = []
+    committed = False
     try:
         for relative in SOFTWARE_REPLACE_PATHS:
             destination = target / relative
@@ -1959,9 +2691,12 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
         status = software_status(target)
         if not status["installed"] or not status["current"]:
             fail("installed Qwen Code CLI did not validate as the tested standalone version")
+        committed = True
     except BaseException:
         moved_old = [
-            relative for relative in SOFTWARE_REPLACE_PATHS if path_exists_no_follow(hold / relative)
+            relative
+            for relative in SOFTWARE_REPLACE_PATHS
+            if path_exists_no_follow(hold / relative)
         ]
         restore_software_paths(
             target,
@@ -1972,8 +2707,10 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
             preexisting_parent_paths=preexisting_parent_paths,
         )
         raise
-    finally:
-        shutil.rmtree(hold, ignore_errors=True)
+    if committed and path_exists_no_follow(hold):
+        root = require_control_root(create=True)
+        return retire_path_after_commit(root, target, hold, "software-replace")
+    return False
 
 
 def run_official_standalone_installer(stage_root: Path, live_stage: Path) -> None:
@@ -1999,9 +2736,10 @@ def run_official_standalone_installer(stage_root: Path, live_stage: Path) -> Non
 
 def write_stage_software_manifest(live_stage: Path) -> None:
     manifest = live_stage / SOFTWARE_MANIFEST_RELATIVE
-    manifest.parent.mkdir(mode=OWNER_DIRECTORY_MODE, parents=True, exist_ok=True)
-    manifest.write_bytes(canonical_json(build_software_manifest(live_stage)))
-    manifest.chmod(OWNER_FILE_MODE)
+    create_or_require_private_child_directory(live_stage, SOFTWARE_MANIFEST_RELATIVE.parent)
+    durable_write_file(
+        manifest, canonical_json(build_software_manifest(live_stage)), OWNER_FILE_MODE
+    )
 
 
 def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
@@ -2027,6 +2765,7 @@ def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
                 "changed": False,
                 "version": preflight["version"],
                 "executable": preflight["executable"],
+                "cleanup_pending": preflight["cleanup_pending"],
             }
     staging: Path | None = None
     with target_lock(target):
@@ -2053,6 +2792,7 @@ def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
                         "changed": False,
                         "version": status["version"],
                         "executable": status["executable"],
+                        "cleanup_pending": status["cleanup_pending"],
                     }
             staging = Path(
                 tempfile.mkdtemp(
@@ -2066,14 +2806,16 @@ def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
             run_official_standalone_installer(staging, live_stage)
             chmod_private_tree(live_stage)
             write_stage_software_manifest(live_stage)
-            replace_software_state(target, live_stage, staging)
+            cleanup_pending = replace_software_state(target, live_stage, staging)
             installation = require_current_software(target)
         except BaseException:
             remove_created_target_if_empty(target, target_existed_before)
             raise
         finally:
             if staging is not None:
-                shutil.rmtree(staging, ignore_errors=True)
+                if path_exists_no_follow(staging):
+                    cleanup_path(staging)
+                    fsync_directory(staging.parent)
     return {
         "schema_version": 1,
         "command": command,
@@ -2081,6 +2823,65 @@ def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
         "changed": True,
         "version": installation["version"],
         "executable": installation["executable"],
+        "cleanup_pending": cleanup_pending,
+    }
+
+
+def remove_cli(target: Path) -> dict[str, Any]:
+    require_private_target_directory_for_software(target, allow_missing=True)
+    status = software_status(target)
+    if status["software_state"] == "absent":
+        return {
+            "schema_version": 1,
+            "command": "remove-cli",
+            "target": str(target),
+            "changed": False,
+            "version": None,
+            "cleanup_pending": status["cleanup_pending"],
+        }
+    validate_existing_software_surface(target)
+    hold_parent = target / ".nddev-qwen-code-software-remove"
+    if path_exists_no_follow(hold_parent):
+        fail("software remove transaction residue already exists")
+    hold_parent.mkdir(mode=OWNER_DIRECTORY_MODE)
+    hold_parent.chmod(OWNER_DIRECTORY_MODE)
+    fsync_directory(hold_parent.parent)
+    moved: list[Path] = []
+    try:
+        for relative in SOFTWARE_REPLACE_PATHS:
+            source = target / relative
+            if path_exists_no_follow(source):
+                saved = hold_parent / relative
+                move_old_path(source, saved)
+                moved.append(relative)
+        for relative in sorted(
+            SOFTWARE_PARENT_PATHS, key=lambda item: len(item.parts), reverse=True
+        ):
+            parent = target / relative
+            if path_exists_no_follow(parent):
+                with contextlib.suppress(OSError):
+                    parent.rmdir()
+                    fsync_directory(parent.parent)
+        after = software_status(target)
+        if after["software_state"] != "absent":
+            fail("postcondition failed: Qwen Code software is still present")
+    except BaseException:
+        for relative in reversed(moved):
+            saved = hold_parent / relative
+            if path_exists_no_follow(saved):
+                move_replace_path(saved, target / relative)
+        with contextlib.suppress(OSError):
+            cleanup_path(hold_parent)
+        raise
+    root = require_control_root(create=True)
+    pending = retire_path_after_commit(root, target, hold_parent, "software-remove")
+    return {
+        "schema_version": 1,
+        "command": "remove-cli",
+        "target": str(target),
+        "changed": True,
+        "version": status.get("version"),
+        "cleanup_pending": pending,
     }
 
 
@@ -2100,6 +2901,7 @@ def builder_status(target: Path) -> dict[str, Any]:
         "version": version,
         "projection": "qwen-extension",
         "manifest": "extensions/nddev-builder/qwen-extension.json",
+        "cleanup_pending": status["cleanup_pending"],
     }
 
 
@@ -2132,12 +2934,59 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
     override = first_qwen_scope_override(forwarded)
     if override is not None:
         fail(f"launch arguments must not override target-owned Qwen Code scope: {override}")
-    with target_lock(target):
-        require_clean_managed(target)
-        installation = require_current_software(target)
-        environment = launch_environment(target)
-        executable = str(installation["executable"])
+    require_clean_managed(target)
+    installation = require_current_software(target)
+    environment = launch_environment(target)
+    executable = str(installation["executable"])
     return spawn_qwen_child(executable, forwarded, environment)
+
+
+def coordinated_target_read(raw_target: str, callback: Any) -> Any:
+    preflight_supported_host()
+    lexical = validate_lexical_target(raw_target)
+    root = require_control_root(create=False)
+    if root is None or not path_exists_no_follow(product_anchor_path(root)):
+        target = canonicalize_target(lexical)
+        result = callback(target)
+        root_after = require_control_root(create=False)
+        if root_after is None or not path_exists_no_follow(product_anchor_path(root_after)):
+            return result
+        root = root_after
+    product_anchor = product_anchor_path(root)
+    with anchor_lock(product_anchor, kind="product", target=None, exclusive=False, create=False):
+        target = canonicalize_target(lexical)
+        target_anchor = target_anchor_path(root, target)
+        if path_exists_no_follow(target_anchor):
+            with anchor_lock(
+                target_anchor,
+                kind="target",
+                target=target,
+                exclusive=False,
+                create=False,
+            ):
+                return callback(target)
+        return callback(target)
+
+
+def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
+    preflight_supported_host()
+    lexical = validate_lexical_target(raw_target)
+    root = require_control_root(create=True)
+    product_anchor = product_anchor_path(root)
+    with anchor_lock(product_anchor, kind="product", target=None, exclusive=True, create=True):
+        target = canonicalize_target(lexical)
+        targets_root = root / TARGET_ANCHOR_DIRECTORY
+        ensure_private_directory_component(targets_root)
+        target_anchor = target_anchor_path(root, target)
+        with anchor_lock(
+            target_anchor,
+            kind="target",
+            target=target,
+            exclusive=True,
+            create=True,
+        ):
+            drain_cleanup(root, target, read_only=False)
+            return callback(target)
 
 
 def human_output(value: dict[str, Any]) -> str:
@@ -2169,7 +3018,7 @@ def add_target(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = JsonArgumentParser(
         prog="nddev-qwen-code",
         description="Manage a portable Qwen Code setup at an explicit target.",
     )
@@ -2198,6 +3047,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("software-status", "Inspect target-owned Qwen Code CLI software."),
         ("install-cli", "Install the pinned official Qwen Code standalone build."),
         ("update-cli", "Update target-owned Qwen Code to the pinned standalone build."),
+        ("remove-cli", "Remove target-owned Qwen Code CLI software."),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)
         add_target(command_parser)
@@ -2214,39 +3064,58 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
 def run(args: argparse.Namespace) -> dict[str, Any] | int:
     if args.command == "list":
         return {"schema_version": 1, "command": "list", "setups": list_setups()}
-    target = resolve_target(args.target)
     if args.command == "status":
-        return {
-            "schema_version": 1,
-            "command": "status",
-            "target": str(target),
-            **inspect_target(target),
-        }
+        return coordinated_target_read(
+            args.target,
+            lambda target: {
+                "schema_version": 1,
+                "command": "status",
+                "target": str(target),
+                **inspect_target(target),
+            },
+        )
     if args.command == "plan":
-        return plan_setup(target, args.setup)
+        return coordinated_target_read(args.target, lambda target: plan_setup(target, args.setup))
     if args.command in {"install", "switch"}:
-        return mutate_setup(target, args.setup, args.command)
+        return coordinated_target_mutation(
+            args.target,
+            lambda target: mutate_setup(target, args.setup, args.command),
+        )
     if args.command == "restore":
-        return restore_slot(target, args.backup)
+        return coordinated_target_mutation(
+            args.target,
+            lambda target: restore_slot(target, args.backup),
+        )
     if args.command == "remove":
-        return remove_setup(target)
+        return coordinated_target_mutation(args.target, remove_setup)
     if args.command == "builder-status":
-        return builder_status(target)
+        return coordinated_target_read(args.target, builder_status)
     if args.command == "software-status":
-        return software_status(target)
+        return coordinated_target_read(args.target, software_status)
     if args.command in {"install-cli", "update-cli"}:
-        return install_or_update_cli(target, args.command)
+        return coordinated_target_mutation(
+            args.target,
+            lambda target: install_or_update_cli(target, args.command),
+        )
+    if args.command == "remove-cli":
+        return coordinated_target_mutation(args.target, remove_cli)
     if args.command == "launch":
-        return launch_qwen(target, list(args.qwen_args))
+        return coordinated_target_mutation(
+            args.target,
+            lambda target: launch_qwen(target, list(args.qwen_args)),
+        )
     fail(f"unsupported command: {args.command}")
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parse_args(argv)
     try:
         result = run(args)
     except (QwenCodeSetupError, OSError, subprocess.SubprocessError) as exc:

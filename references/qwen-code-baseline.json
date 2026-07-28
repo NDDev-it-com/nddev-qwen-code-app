@@ -2,33 +2,109 @@
   "schema_version": 1,
   "source": "QwenLM/qwen-code",
   "release": {
-    "tag": "v0.21.0",
-    "published_at": "2026-07-24T13:32:48Z",
-    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.0"
+    "tag": "v0.21.1",
+    "published_at": "2026-07-28T17:52:26Z",
+    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.1",
+    "api_url": "https://api.github.com/repos/QwenLM/qwen-code/releases/361272312",
+    "target_commitish": "release/v0.21.1"
   },
   "package": {
     "name": "@qwen-code/qwen-code",
-    "version": "0.21.0",
+    "version": "0.21.1",
     "binary": "qwen",
-    "node_requires": ">=22.0.0"
+    "node_requires": ">=22.0.0",
+    "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+    "integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
+    "shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
+    "git_head": "41b4ee8373fb4aa324925e69e0515ca72959ec5b"
+  },
+  "npm_optional_dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.10",
+    "@lydell/node-pty-darwin-arm64": "1.2.0-beta.10",
+    "@lydell/node-pty-darwin-x64": "1.2.0-beta.10",
+    "@lydell/node-pty-linux-x64": "1.2.0-beta.10",
+    "@lydell/node-pty-win32-arm64": "1.2.0-beta.10",
+    "@lydell/node-pty-win32-x64": "1.2.0-beta.10",
+    "@qwen-code/audio-capture": "0.21.1",
+    "@teddyzhu/clipboard": "0.0.5",
+    "@teddyzhu/clipboard-darwin-arm64": "0.0.5",
+    "@teddyzhu/clipboard-darwin-x64": "0.0.5",
+    "@teddyzhu/clipboard-linux-arm64-gnu": "0.0.5",
+    "@teddyzhu/clipboard-linux-x64-gnu": "0.0.5",
+    "@teddyzhu/clipboard-win32-arm64-msvc": "0.0.5",
+    "@teddyzhu/clipboard-win32-x64-msvc": "0.0.5",
+    "sharp": "0.34.5"
   },
   "standalone_installer": {
     "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
     "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-    "argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
+    "argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
     "archive_verification": "official SHA256SUMS"
   },
+  "release_assets": {
+    "cli.js": {
+      "size_bytes": 12520,
+      "sha256": "978ad6207bf2eb004aec30a894a796da1e56d2470ae4a8a1839a28c4183ddcb3"
+    },
+    "qwen-code-darwin-arm64.tar.gz": {
+      "size_bytes": 75117454,
+      "sha256": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6"
+    },
+    "qwen-code-darwin-x64.tar.gz": {
+      "size_bytes": 76413403,
+      "sha256": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e"
+    },
+    "qwen-code-linux-arm64.tar.gz": {
+      "size_bytes": 82000362,
+      "sha256": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454"
+    },
+    "qwen-code-linux-x64.tar.gz": {
+      "size_bytes": 82210013,
+      "sha256": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c"
+    },
+    "qwen-code-win-x64.zip": {
+      "size_bytes": 62740686,
+      "sha256": "a6cdf6847e2e9259d57d18c29c2affc8929627e45681e534447816f9ea654676"
+    },
+    "SHA256SUMS": {
+      "size_bytes": 466,
+      "sha256": "3dcef600099ae00f039046347914854cb8a53e0e46158abd39e813b950d2c8c9"
+    }
+  },
   "standalone_archives": {
-    "darwin-arm64": "5974be1e68db8497036071ad2826d85c324c879f096c62f2344c7d3d1c1a48ec",
-    "darwin-x64": "0edd28c694afd81af15c453667c704ea122564093856b4c3241f66e5a921f119",
-    "linux-arm64": "9d5eb139dc5e5bc630da8e719c6e0ae5bc212b4e0b6b9d77e87662b83682a5eb",
-    "linux-x64": "bf0fa824336dea986a5955e1dca00bde8b24be8c9d36c8b3b82cee69ce6cccc8"
+    "darwin-arm64": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6",
+    "darwin-x64": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e",
+    "linux-arm64": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454",
+    "linux-x64": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c"
+  },
+  "product_hosts": {
+    "supported": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "unsupported_categories": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "ubuntu_version_floor": null,
+    "vendor_mapping": {
+      "macos-arm64": "darwin-arm64",
+      "macos-x64": "darwin-x64",
+      "ubuntu-glibc-arm64": "linux-arm64",
+      "ubuntu-glibc-x64": "linux-x64"
+    }
   },
   "configuration": {
     "home_environment_variable": "QWEN_HOME",
     "runtime_environment_variable": "QWEN_RUNTIME_DIR",
     "global_settings": "settings.json",
     "global_context_file": "QWEN.md",
+    "agents_compatibility_file": "AGENTS.md",
+    "claude_compatibility_file": "CLAUDE.md",
     "extension_root": "extensions",
     "extension_manifest": "qwen-extension.json"
   },

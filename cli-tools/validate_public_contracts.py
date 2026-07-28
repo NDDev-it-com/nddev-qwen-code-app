@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 MANAGER_PATH = ROOT / "cli-tools" / "nddev_qwen_code.py"
 MANAGER_SPEC = importlib.util.spec_from_file_location("nddev_qwen_code", MANAGER_PATH)
@@ -28,23 +29,33 @@ EXPECTED_SETUP_POLICY = {
     "balanced": {"approvalMode": "auto-edit", "sandbox": True},
     "full-auto": {"approvalMode": "yolo", "sandbox": False},
 }
+EXPECTED_MANAGED_FILES = ["settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md"]
 EXPECTED_QWEN = {
-    "version": "0.21.0",
-    "release_tag": "v0.21.0",
-    "release_published_at": "2026-07-24T13:32:48Z",
+    "version": "0.21.1",
+    "release_tag": "v0.21.1",
+    "release_published_at": "2026-07-28T17:52:26Z",
     "package": "@qwen-code/qwen-code",
+    "npm_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+    "npm_integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
+    "npm_shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
     "installer_url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
     "installer_sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-    "installer_argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
+    "installer_argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
     "archive_verification": "official SHA256SUMS",
     "node_requires": ">=22.0.0",
 }
 EXPECTED_ARCHIVES = {
-    "darwin-arm64": "5974be1e68db8497036071ad2826d85c324c879f096c62f2344c7d3d1c1a48ec",
-    "darwin-x64": "0edd28c694afd81af15c453667c704ea122564093856b4c3241f66e5a921f119",
-    "linux-arm64": "9d5eb139dc5e5bc630da8e719c6e0ae5bc212b4e0b6b9d77e87662b83682a5eb",
-    "linux-x64": "bf0fa824336dea986a5955e1dca00bde8b24be8c9d36c8b3b82cee69ce6cccc8",
+    "darwin-arm64": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6",
+    "darwin-x64": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e",
+    "linux-arm64": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454",
+    "linux-x64": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c",
 }
+EXPECTED_HOSTS = [
+    "macos-arm64",
+    "macos-x64",
+    "ubuntu-glibc-arm64",
+    "ubuntu-glibc-x64",
+]
 PLACEHOLDER_MARKER = "skele" + "ton"
 
 
@@ -111,6 +122,26 @@ def validate_versions(errors: list[str]) -> None:
         errors,
     )
     require(build.get("qwen_code_package") == EXPECTED_QWEN["package"], "package mismatch", errors)
+    require(
+        build.get("python_requires") == ">=3.9",
+        "Python requirement must include macOS system Python 3.9",
+        errors,
+    )
+    require(
+        build.get("qwen_code_npm_tarball") == EXPECTED_QWEN["npm_tarball"],
+        "npm tarball mismatch",
+        errors,
+    )
+    require(
+        build.get("qwen_code_npm_integrity") == EXPECTED_QWEN["npm_integrity"],
+        "npm integrity mismatch",
+        errors,
+    )
+    require(
+        build.get("qwen_code_npm_shasum") == EXPECTED_QWEN["npm_shasum"],
+        "npm shasum mismatch",
+        errors,
+    )
     require(
         build.get("standalone_installer_url") == nddev_qwen_code.INSTALLER_URL,
         "standalone installer URL mismatch",
@@ -187,6 +218,21 @@ def validate_versions(errors: list[str]) -> None:
             "baseline node requirement mismatch",
             errors,
         )
+        require(
+            package.get("tarball") == build.get("qwen_code_npm_tarball"),
+            "baseline npm tarball mismatch",
+            errors,
+        )
+        require(
+            package.get("integrity") == build.get("qwen_code_npm_integrity"),
+            "baseline npm integrity mismatch",
+            errors,
+        )
+        require(
+            package.get("shasum") == build.get("qwen_code_npm_shasum"),
+            "baseline npm shasum mismatch",
+            errors,
+        )
     installer = baseline.get("standalone_installer")
     require(isinstance(installer, dict), "baseline standalone_installer block missing", errors)
     if isinstance(installer, dict):
@@ -215,6 +261,35 @@ def validate_versions(errors: list[str]) -> None:
         "baseline standalone archive SHA256SUMS mismatch",
         errors,
     )
+    release_assets = baseline.get("release_assets")
+    require(isinstance(release_assets, dict), "baseline release_assets block missing", errors)
+    if isinstance(release_assets, dict):
+        for archive, digest in EXPECTED_ARCHIVES.items():
+            asset_name = f"qwen-code-{archive}.tar.gz"
+            asset = release_assets.get(asset_name)
+            require(isinstance(asset, dict), f"missing release asset {asset_name}", errors)
+            if isinstance(asset, dict):
+                require(
+                    asset.get("sha256") == digest,
+                    f"release asset {asset_name} digest mismatch",
+                    errors,
+                )
+                require(
+                    isinstance(asset.get("size_bytes"), int),
+                    f"release asset {asset_name} size missing",
+                    errors,
+                )
+    product_hosts = baseline.get("product_hosts")
+    require(isinstance(product_hosts, dict), "baseline product_hosts block missing", errors)
+    if isinstance(product_hosts, dict):
+        require(
+            product_hosts.get("supported") == EXPECTED_HOSTS, "supported host IDs mismatch", errors
+        )
+        require(
+            product_hosts.get("ubuntu_version_floor") is None,
+            "Ubuntu version floor must be null",
+            errors,
+        )
 
 
 def validate_setups(errors: list[str]) -> None:
@@ -255,7 +330,7 @@ def validate_setups(errors: list[str]) -> None:
         settings = read_json(f"setups/{setup_id}/settings.json")
         require(setup.get("id") == setup_id, f"{setup_id} setup id mismatch", errors)
         require(
-            setup.get("managed_files") == ["settings.json", "QWEN.md"],
+            setup.get("managed_files") == EXPECTED_MANAGED_FILES,
             f"{setup_id} managed_files mismatch",
             errors,
         )
@@ -285,6 +360,10 @@ def validate_setups(errors: list[str]) -> None:
             f"{setup_id} context file mismatch",
             errors,
         )
+        for name in ("QWEN.md", "AGENTS.md", "CLAUDE.md"):
+            require(
+                (ROOT / "setups" / setup_id / name).is_file(), f"{setup_id} missing {name}", errors
+            )
         privacy = settings.get("privacy")
         require(
             isinstance(privacy, dict) and privacy.get("usageStatisticsEnabled") is False,
@@ -350,6 +429,21 @@ def validate_runtime_and_software(errors: list[str]) -> None:
                 f"{owner} archive verification mismatch",
                 errors,
             )
+        require(
+            surface.get("supported_hosts") == EXPECTED_HOSTS,
+            f"{owner} supported host IDs mismatch",
+            errors,
+        )
+        require(
+            surface.get("ubuntu_version_floor") is None,
+            f"{owner} must not invent an Ubuntu version floor",
+            errors,
+        )
+        require(
+            surface.get("vendor_platforms") == list(EXPECTED_ARCHIVES),
+            f"{owner} vendor platform mapping mismatch",
+            errors,
+        )
         bounds = surface.get("bounds")
         require(isinstance(bounds, dict), f"{owner} software bounds missing", errors)
         if isinstance(bounds, dict):
@@ -446,6 +540,30 @@ def validate_builder(errors: list[str]) -> None:
         )
 
 
+def validate_parser_contract(errors: list[str]) -> None:
+    require(hasattr(nddev_qwen_code, "parse_args"), "manager must expose parse_args(argv)", errors)
+    examples = (
+        ["list"],
+        ["status", "--target", "/tmp/qwen"],
+        ["plan", "--setup", "safe", "--target", "/tmp/qwen"],
+        ["install", "--setup", "safe", "--target", "/tmp/qwen"],
+        ["switch", "--setup", "balanced", "--target", "/tmp/qwen"],
+        ["restore", "--backup", "0", "--target", "/tmp/qwen"],
+        ["remove", "--target", "/tmp/qwen"],
+        ["builder-status", "--target", "/tmp/qwen"],
+        ["software-status", "--target", "/tmp/qwen"],
+        ["install-cli", "--target", "/tmp/qwen"],
+        ["update-cli", "--target", "/tmp/qwen"],
+        ["remove-cli", "--target", "/tmp/qwen"],
+        ["launch", "--target", "/tmp/qwen", "--", "--version"],
+    )
+    for argv in examples:
+        try:
+            nddev_qwen_code.parse_args(list(argv))
+        except SystemExit as exc:
+            errors.append(f"parse_args rejected documented argv {argv!r}: {exc.code}")
+
+
 def validate_public_tree(errors: list[str]) -> None:
     own_path = Path(__file__).resolve()
     for path in sorted(ROOT.rglob("*")):
@@ -466,6 +584,7 @@ def main() -> int:
         validate_setups(errors)
         validate_runtime_and_software(errors)
         validate_builder(errors)
+        validate_parser_contract(errors)
         validate_public_tree(errors)
     except Exception as exc:  # noqa: BLE001 - concise public CLI failure.
         errors.append(str(exc))

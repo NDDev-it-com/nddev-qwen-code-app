@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "full-auto",
   "description": "Qwen Code setup that uses YOLO approval mode for explicitly trusted autonomous work.",
-  "managed_files": ["settings.json", "QWEN.md"],
+  "managed_files": ["settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md"],
   "builder_extension": "extensions/nddev-builder",
   "builder_default_on": true
 }
