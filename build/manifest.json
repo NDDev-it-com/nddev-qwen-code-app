@@ -4,12 +4,16 @@
   "build_version": "0.1.0",
   "entrypoint": "python3 cli-tools/nddev_qwen_code.py",
   "source_root": "setups",
-  "setup_ids": ["safe", "balanced", "full-auto"],
+  "setup_ids": ["nddev-builder"],
+  "profile_root": "profiles",
+  "profile_ids": ["full-auto", "safe"],
+  "default_profile": "full-auto",
+  "legacy_setup_ids": ["safe", "balanced", "full-auto"],
   "managed_files": [
     "settings.json",
     "QWEN.md",
     "AGENTS.md",
-    "CLAUDE.md",
+    ".claude/CLAUDE.md",
     "extensions/nddev-builder/qwen-extension.json",
     "extensions/nddev-builder/QWEN.md",
     "extensions/nddev-builder/skills/qwen-builder-orientation/SKILL.md",
@@ -17,22 +21,24 @@
     "NDDEV-QWEN-CODE-SETUP.json"
   ],
   "permission_policy": {
-    "configuration_surface": "tools.approvalMode",
-    "setups": {
-      "safe": {
-        "approvalMode": "default",
-        "sandbox": true
-      },
-      "balanced": {
-        "approvalMode": "auto-edit",
-        "sandbox": true
-      },
+    "configuration_surface": "profiles/<profile-id>/profile.json:settings_overlay.tools",
+    "profiles": {
       "full-auto": {
         "approvalMode": "yolo",
         "sandbox": false
+      },
+      "safe": {
+        "approvalMode": "default",
+        "sandbox": true
       }
     },
-    "source": "setups/<id>/settings.json"
+    "legacy_profiles": {
+      "balanced": {
+        "approvalMode": "auto-edit",
+        "sandbox": true
+      }
+    },
+    "source": "profiles/<id>/profile.json"
   },
   "builder_extension": {
     "projection": "qwen-extension",
@@ -66,11 +72,28 @@
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
-    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> [--workspace <absolute-project-dir>] -- [args...]",
     "requires_clean_managed_target": true,
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
+    "workspace_scope": {
+      "manager_option": "--workspace <absolute-existing-directory>",
+      "default": "captured caller cwd",
+      "native_qwen_primary_workspace_flag": null,
+      "child_cwd_explicit": true,
+      "blocked_native_workspace_controls": [
+        "--include-directories",
+        "--add-dir",
+        "--includeDirectories",
+        "--addDir",
+        "--worktree",
+        "--workspace",
+        "--cwd"
+      ],
+      "blocked_short_value_forms": ["-e", "-i", "-m", "-o", "-p", "-r"],
+      "grammar_source_ref": "references/qwen-code-baseline.json:launch_scope_grammar"
+    },
     "path_inherited": false,
     "target_must_equal_qwen_home": true
   },
@@ -80,6 +103,16 @@
     "location": "sibling .<target-name>.nddev-qwen-code-backups",
     "managed_path_record_schema": "path-size-sha256",
     "slots": 10
+  },
+  "stamp_policy": {
+    "schema_version": 2,
+    "setup_id": "nddev-builder",
+    "profile_field": "profile_id",
+    "builder_projection_field": "builder_projection",
+    "legacy_schema_1": {
+      "readable_setup_ids": ["safe", "full-auto"],
+      "migration_required_setup_ids": ["balanced"]
+    }
   },
   "command_policy": {
     "json_supported": [

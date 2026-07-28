@@ -7,20 +7,29 @@
   "version_ref": "build/version.json",
   "managed_state": {
     "stamp_file": "NDDEV-QWEN-CODE-SETUP.json",
-    "stamp_schema": 1,
+    "stamp_schema": 2,
+    "legacy_stamp_schema": {
+      "schema_version": 1,
+      "readable_setup_ids": ["safe", "full-auto"],
+      "migration_required_setup_ids": ["balanced"]
+    },
     "managed_file_mode": "0600",
-    "managed_files": ["settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md"],
+    "managed_files": ["settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"],
     "managed_tree_root": "extensions/nddev-builder",
     "preserve_other_state": true
   },
   "setup_system": {
     "catalog_root": "setups",
     "identity_source": "setups/<setup-id>/setup.json",
-    "setup_ids": ["safe", "balanced", "full-auto"],
-    "selection_option": "--setup <safe|balanced|full-auto>",
+    "setup_ids": ["nddev-builder"],
+    "profile_root": "profiles",
+    "profile_ids": ["full-auto", "safe"],
+    "default_profile": "full-auto",
+    "legacy_setup_ids": ["safe", "balanced", "full-auto"],
+    "selection_option": "--setup nddev-builder --profile <full-auto|safe>",
     "list_command": "python3 cli-tools/nddev_qwen_code.py list [--json]",
     "status_command": "python3 cli-tools/nddev_qwen_code.py status --target <absolute-target> [--json]",
-    "launch_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "launch_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> [--workspace <absolute-project-dir>] -- [args...]",
     "builder_status_command": "python3 cli-tools/nddev_qwen_code.py builder-status --target <absolute-target> [--json]",
     "builder_default_on": true
   },
@@ -65,12 +74,29 @@
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
-    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> [--workspace <absolute-project-dir>] -- [args...]",
     "requires_clean_managed_target": true,
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
     "launch_handoff": "private non-writable verified handoff image",
+    "workspace_scope": {
+      "manager_option": "--workspace <absolute-existing-directory>",
+      "default": "captured caller cwd",
+      "native_qwen_primary_workspace_flag": null,
+      "child_cwd_explicit": true,
+      "blocked_native_workspace_controls": [
+        "--include-directories",
+        "--add-dir",
+        "--includeDirectories",
+        "--addDir",
+        "--worktree",
+        "--workspace",
+        "--cwd"
+      ],
+      "blocked_short_value_forms": ["-e", "-i", "-m", "-o", "-p", "-r"],
+      "grammar_source_ref": "references/qwen-code-baseline.json:launch_scope_grammar"
+    },
     "path_inherited": false,
     "target_must_equal_qwen_home": true
   },

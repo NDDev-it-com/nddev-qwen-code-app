@@ -104,9 +104,30 @@
     "global_settings": "settings.json",
     "global_context_file": "QWEN.md",
     "agents_compatibility_file": "AGENTS.md",
-    "claude_compatibility_file": "CLAUDE.md",
+    "qwen_native_claude_compatibility_observation": "CLAUDE.md",
+    "nddev_managed_claude_bridge": ".claude/CLAUDE.md",
     "extension_root": "extensions",
     "extension_manifest": "qwen-extension.json"
+  },
+  "launch_scope_grammar": {
+    "source": "Official @qwen-code/qwen-code 0.21.1 package: cli.js top-level help parser, chunks/chunk-7BAU433D.js normal and channel parsers, chunks/chunk-S4WJVPZW.js serve parser.",
+    "normal_launch_primary_workspace_flag": null,
+    "normal_launch_cwd_flag": null,
+    "normal_launch_project_flag": null,
+    "blocked_workspace_controls": [
+      "--include-directories",
+      "--add-dir",
+      "--includeDirectories",
+      "--addDir",
+      "--worktree",
+      "--workspace",
+      "--cwd"
+    ],
+    "blocked_short_value_forms": ["-e", "-i", "-m", "-o", "-p", "-r"],
+    "assignment_forms_blocked": true,
+    "attached_short_value_forms_blocked": true,
+    "serve_workspace_flag": "--workspace",
+    "channel_pairing_cwd_flag": "--cwd"
   },
   "native_builder_projection": {
     "extension": "extensions/nddev-builder",

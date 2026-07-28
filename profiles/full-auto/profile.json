@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "full-auto",
+  "description": "Default runtime profile for trusted isolated work with Qwen Code YOLO approval mode.",
+  "settings_overlay": {
+    "tools": {
+      "approvalMode": "yolo",
+      "sandbox": false
+    }
+  }
+}

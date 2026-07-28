@@ -1,4 +1,4 @@
-# NDDev Qwen Code Full-Auto Setup
+# NDDev Qwen Code Builder Setup
 
 Qwen Code reads `AGENTS.md` for cross-agent compatibility. See @QWEN.md for
 the authoritative setup instructions.

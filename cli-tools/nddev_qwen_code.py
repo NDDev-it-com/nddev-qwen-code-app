@@ -31,19 +31,29 @@ from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_ROOT = ROOT / "setups"
+PROFILE_ROOT = ROOT / "profiles"
 BUILDER_ROOT = ROOT / "extensions" / "nddev-builder"
 VERSION = (ROOT / "VERSION").read_text(encoding="ascii").strip()
 PRODUCT_NAME = "nddev-qwen-code-app"
 STAMP_NAME = "NDDEV-QWEN-CODE-SETUP.json"
 BACKUP_NAME = "NDDEV-QWEN-CODE-BACKUP.json"
-MANAGED_FILES = ("settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md")
+MANAGED_FILES = ("settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md")
+LEGACY_SCHEMA1_MANAGED_FILES = ("settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md")
 BUILDER_FILES = (
     "extensions/nddev-builder/qwen-extension.json",
     "extensions/nddev-builder/QWEN.md",
     "extensions/nddev-builder/skills/qwen-builder-orientation/SKILL.md",
     "extensions/nddev-builder/agents/qwen-builder-reviewer.md",
 )
-MANAGED_PATHS = (*MANAGED_FILES, *BUILDER_FILES, STAMP_NAME)
+CURRENT_PAYLOAD_PATHS = (*MANAGED_FILES, *BUILDER_FILES)
+LEGACY_SCHEMA1_PAYLOAD_PATHS = (*LEGACY_SCHEMA1_MANAGED_FILES, *BUILDER_FILES)
+ALL_PAYLOAD_PATHS = tuple(dict.fromkeys((*CURRENT_PAYLOAD_PATHS, *LEGACY_SCHEMA1_PAYLOAD_PATHS)))
+MANAGED_PATHS = (*ALL_PAYLOAD_PATHS, STAMP_NAME)
+BUILDER_PROJECTION = {
+    "type": "qwen-extension",
+    "root": "extensions/nddev-builder",
+    "default_on": True,
+}
 OWNER_FILE_MODE = 0o600
 OWNER_DIRECTORY_MODE = 0o700
 METADATA_MAX_BYTES = 256 * 1024
@@ -120,13 +130,29 @@ SOFTWARE_PARENT_PATHS = tuple(
     )
 )
 SETUP_ID_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+CONTENT_SETUP_ID = "nddev-builder"
+DEFAULT_PROFILE_ID = "full-auto"
+PROFILE_IDS = ("full-auto", "safe")
+LEGACY_SETUP_PROFILES = {
+    "safe": "safe",
+    "balanced": "balanced",
+    "full-auto": "full-auto",
+}
+PROFILE_TOOL_POLICY = {
+    "full-auto": ("yolo", False),
+    "safe": ("default", True),
+}
+LEGACY_PROFILE_TOOL_POLICY = {
+    **PROFILE_TOOL_POLICY,
+    "balanced": ("auto-edit", True),
+}
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 SEMVER_PATTERN = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
-STAMP_KEYS = {
+STAMP_V1_KEYS = {
     "schema_version",
     "product_name",
     "build_version",
@@ -134,6 +160,7 @@ STAMP_KEYS = {
     "canonical_target",
     "managed_paths",
 }
+STAMP_V2_KEYS = STAMP_V1_KEYS | {"profile_id", "builder_projection"}
 BACKUP_KEYS = {
     "schema_version",
     "product_name",
@@ -191,7 +218,10 @@ QWEN_SCOPE_FLAGS_WITH_VALUE = {
     "--exclude-tools",
     "--extensions",
     "--fallback-model",
+    "--addDir",
+    "--cwd",
     "--include-directories",
+    "--includeDirectories",
     "--json-fd",
     "--json-file",
     "--json-schema",
@@ -213,11 +243,16 @@ QWEN_SCOPE_FLAGS_WITH_VALUE = {
     "--telemetry-otlp-protocol",
     "--telemetry-outfile",
     "--telemetry-target",
+    "--workspace",
     "--worktree",
     "-e",
+    "-i",
     "-m",
+    "-o",
+    "-p",
     "-r",
 }
+QWEN_SCOPE_SHORT_FLAGS_WITH_VALUE = {"-e", "-i", "-m", "-o", "-p", "-r"}
 QWEN_SCOPE_FLAGS_WITHOUT_VALUE = {
     "--chat-recording",
     "--continue",
@@ -891,6 +926,49 @@ def validate_setup_id(setup_id: str) -> None:
         fail(f"invalid setup id: {setup_id!r}")
 
 
+def validate_profile_id(profile_id: str, *, allow_legacy: bool = False) -> None:
+    if not SETUP_ID_PATTERN.fullmatch(profile_id):
+        fail(f"invalid profile id: {profile_id!r}")
+    allowed = set(PROFILE_IDS)
+    if allow_legacy:
+        allowed.update(LEGACY_SETUP_PROFILES.values())
+    if profile_id not in allowed:
+        fail(f"unsupported profile id: {profile_id}")
+
+
+def normalized_content_setup_id(raw_setup_id: str) -> str:
+    validate_setup_id(raw_setup_id)
+    if raw_setup_id == CONTENT_SETUP_ID:
+        return CONTENT_SETUP_ID
+    if raw_setup_id in LEGACY_SETUP_PROFILES:
+        return CONTENT_SETUP_ID
+    fail(f"unsupported managed stamp setup_id: {raw_setup_id}")
+
+
+def legacy_profile_for_setup(raw_setup_id: str) -> str | None:
+    profile = LEGACY_SETUP_PROFILES.get(raw_setup_id)
+    return None if profile == "balanced" else profile
+
+
+def resolve_setup_profile(setup_id: str | None, profile_id: str | None) -> tuple[str, str]:
+    selected_setup = setup_id or CONTENT_SETUP_ID
+    validate_setup_id(selected_setup)
+    if selected_setup != CONTENT_SETUP_ID:
+        if selected_setup in {"safe", "full-auto"} and profile_id is None:
+            return CONTENT_SETUP_ID, selected_setup
+        if selected_setup in {"safe", "full-auto"}:
+            fail("legacy setup ids cannot be combined with --profile")
+        if selected_setup == "balanced":
+            fail(
+                "legacy setup id 'balanced' requires migration to "
+                "--setup nddev-builder with --profile full-auto or --profile safe"
+            )
+        fail(f"unsupported setup id: {selected_setup}")
+    selected_profile = profile_id or DEFAULT_PROFILE_ID
+    validate_profile_id(selected_profile)
+    return selected_setup, selected_profile
+
+
 def ensure_lf_text(content: bytes, label: str) -> None:
     try:
         content.decode("utf-8")
@@ -901,25 +979,63 @@ def ensure_lf_text(content: bytes, label: str) -> None:
 
 
 def validate_setup_settings(setup_id: str, settings: dict[str, Any]) -> None:
-    expected = {
-        "safe": ("default", True),
-        "balanced": ("auto-edit", True),
-        "full-auto": ("yolo", False),
-    }
-    if setup_id not in expected:
+    if setup_id != CONTENT_SETUP_ID:
         fail(f"unsupported setup id: {setup_id}")
     tools = settings.get("tools")
     privacy = settings.get("privacy")
     context = settings.get("context")
     if not isinstance(tools, dict):
         fail(f"setup {setup_id}/settings.json tools must be an object")
+    if "approvalMode" in tools or "sandbox" in tools:
+        fail(f"setup {setup_id}/settings.json must not own profile approval settings")
     if not isinstance(privacy, dict) or privacy.get("usageStatisticsEnabled") is not False:
         fail(f"setup {setup_id}/settings.json must disable usage statistics")
     if not isinstance(context, dict) or context.get("fileName") != ["QWEN.md"]:
         fail(f"setup {setup_id}/settings.json must select QWEN.md context")
-    approval, sandbox = expected[setup_id]
+
+
+def load_profile(profile_id: str) -> dict[str, Any]:
+    validate_profile_id(profile_id)
+    profile_path = PROFILE_ROOT / profile_id / "profile.json"
+    profile = load_json_object(profile_path, f"profile {profile_id}")
+    require_exact_keys(
+        profile,
+        {"schema_version", "id", "description", "settings_overlay"},
+        f"profile {profile_id}",
+    )
+    if profile["schema_version"] != 1 or profile["id"] != profile_id:
+        fail(f"profile {profile_id} identity or schema mismatch")
+    if not isinstance(profile["description"], str) or not profile["description"].strip():
+        fail(f"profile {profile_id} description must be non-empty")
+    overlay = profile["settings_overlay"]
+    if not isinstance(overlay, dict):
+        fail(f"profile {profile_id} settings_overlay must be an object")
+    tools = overlay.get("tools")
+    if not isinstance(tools, dict):
+        fail(f"profile {profile_id} settings_overlay.tools must be an object")
+    approval, sandbox = PROFILE_TOOL_POLICY[profile_id]
     if tools.get("approvalMode") != approval or tools.get("sandbox") is not sandbox:
-        fail(f"setup {setup_id}/settings.json approval or sandbox policy mismatch")
+        fail(f"profile {profile_id} approval or sandbox policy mismatch")
+    return profile
+
+
+def merge_json_objects(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+    result = json.loads(json.dumps(base, sort_keys=True))
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = merge_json_objects(result[key], value)
+        else:
+            result[key] = json.loads(json.dumps(value, sort_keys=True))
+    return result
+
+
+def apply_profile_to_settings(settings: dict[str, Any], profile_id: str) -> dict[str, Any]:
+    if profile_id in PROFILE_IDS:
+        profile = load_profile(profile_id)
+        return merge_json_objects(settings, profile["settings_overlay"])
+    validate_profile_id(profile_id, allow_legacy=True)
+    approval, sandbox = LEGACY_PROFILE_TOOL_POLICY[profile_id]
+    return merge_json_objects(settings, {"tools": {"approvalMode": approval, "sandbox": sandbox}})
 
 
 def render_builder() -> dict[str, bytes]:
@@ -954,8 +1070,13 @@ def render_builder() -> dict[str, bytes]:
     return rendered
 
 
-def render_setup(setup_id: str) -> tuple[dict[str, Any], dict[str, bytes]]:
+def render_setup(
+    setup_id: str = CONTENT_SETUP_ID, profile_id: str = DEFAULT_PROFILE_ID
+) -> tuple[dict[str, Any], dict[str, bytes]]:
     validate_setup_id(setup_id)
+    if setup_id != CONTENT_SETUP_ID:
+        fail(f"unsupported setup id: {setup_id}")
+    validate_profile_id(profile_id)
     setup_root = CATALOG_ROOT / setup_id
     if not setup_root.is_dir() or setup_root.is_symlink():
         fail(f"unknown setup: {setup_id}")
@@ -970,6 +1091,8 @@ def render_setup(setup_id: str) -> tuple[dict[str, Any], dict[str, bytes]]:
             "managed_files",
             "builder_extension",
             "builder_default_on",
+            "default_profile",
+            "profiles",
         },
         f"setup {setup_id} metadata",
     )
@@ -981,6 +1104,10 @@ def render_setup(setup_id: str) -> tuple[dict[str, Any], dict[str, bytes]]:
         fail(f"setup {setup_id} builder extension declaration is invalid")
     if metadata["builder_default_on"] is not True:
         fail(f"setup {setup_id} must enable builder by default")
+    if metadata["default_profile"] != DEFAULT_PROFILE_ID:
+        fail(f"setup {setup_id} default profile declaration is invalid")
+    if metadata["profiles"] != list(PROFILE_IDS):
+        fail(f"setup {setup_id} profile declaration is invalid")
     if not isinstance(metadata["description"], str) or not metadata["description"].strip():
         fail(f"setup {setup_id} description must be non-empty")
 
@@ -991,8 +1118,11 @@ def render_setup(setup_id: str) -> tuple[dict[str, Any], dict[str, bytes]]:
     )
     settings = parse_json_object(settings_content, f"setup {setup_id}/settings.json")
     validate_setup_settings(setup_id, settings)
+    settings = apply_profile_to_settings(settings, profile_id)
     rendered: dict[str, bytes] = {"settings.json": canonical_json(settings)}
-    for name in ("QWEN.md", "AGENTS.md", "CLAUDE.md"):
+    for name in MANAGED_FILES:
+        if name == "settings.json":
+            continue
         content, _ = read_regular_file(setup_root / name, f"setup {setup_id}/{name}")
         ensure_lf_text(content, f"setup {setup_id}/{name}")
         rendered[name] = content
@@ -1013,10 +1143,34 @@ def list_setups() -> list[dict[str, Any]]:
                 "description": metadata["description"],
                 "managed_files": metadata["managed_files"],
                 "builder_default_on": metadata["builder_default_on"],
+                "default_profile": metadata["default_profile"],
+                "profiles": metadata["profiles"],
             }
         )
     if not entries:
         fail("setup catalog is empty")
+    return entries
+
+
+def list_profiles() -> list[dict[str, Any]]:
+    if not PROFILE_ROOT.is_dir() or PROFILE_ROOT.is_symlink():
+        fail("profile catalog is missing or unsafe")
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in sorted(PROFILE_ROOT.iterdir(), key=lambda path: path.name):
+        if not candidate.is_dir() or candidate.is_symlink():
+            fail(f"profile catalog entry must be a real directory: {candidate.name}")
+        profile = load_profile(candidate.name)
+        seen.add(profile["id"])
+        entries.append(
+            {
+                "id": profile["id"],
+                "description": profile["description"],
+                "default": profile["id"] == DEFAULT_PROFILE_ID,
+            }
+        )
+    if tuple(sorted(seen)) != tuple(sorted(PROFILE_IDS)):
+        fail("profile catalog identity mismatch")
     return entries
 
 
@@ -1176,11 +1330,13 @@ def snapshot_managed(target: Path, *, owner_only: bool = True) -> dict[str, File
     }
 
 
-def validate_digest_map(value: Any, label: str) -> dict[str, str | None]:
-    if not isinstance(value, dict) or set(value) != set((*MANAGED_FILES, *BUILDER_FILES)):
+def validate_digest_map(
+    value: Any, label: str, expected_paths: tuple[str, ...] = CURRENT_PAYLOAD_PATHS
+) -> dict[str, str | None]:
+    if not isinstance(value, dict) or set(value) != set(expected_paths):
         fail(f"{label} must declare exactly managed payload paths")
     result: dict[str, str | None] = {}
-    for name in (*MANAGED_FILES, *BUILDER_FILES):
+    for name in expected_paths:
         digest = value[name]
         if digest is not None and (
             not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None
@@ -1190,11 +1346,25 @@ def validate_digest_map(value: Any, label: str) -> dict[str, str | None]:
     return result
 
 
+def backup_record_paths(value: Any, label: str) -> tuple[str, ...]:
+    if not isinstance(value, dict):
+        fail(f"{label} must declare exactly managed payload paths")
+    actual = set(value)
+    if actual == set(ALL_PAYLOAD_PATHS):
+        return ALL_PAYLOAD_PATHS
+    if actual == set(LEGACY_SCHEMA1_PAYLOAD_PATHS):
+        return LEGACY_SCHEMA1_PAYLOAD_PATHS
+    if actual == set(CURRENT_PAYLOAD_PATHS):
+        return CURRENT_PAYLOAD_PATHS
+    fail(f"{label} must declare exactly managed payload paths")
+
+
 def validate_backup_record_map(value: Any, label: str) -> dict[str, dict[str, Any] | None]:
-    if not isinstance(value, dict) or set(value) != set((*MANAGED_FILES, *BUILDER_FILES)):
+    expected_paths = backup_record_paths(value, label)
+    if not isinstance(value, dict):
         fail(f"{label} must declare exactly managed payload paths")
     result: dict[str, dict[str, Any] | None] = {}
-    for name in (*MANAGED_FILES, *BUILDER_FILES):
+    for name in expected_paths:
         record = value[name]
         if record is None:
             result[name] = None
@@ -1213,19 +1383,81 @@ def validate_backup_record_map(value: Any, label: str) -> dict[str, dict[str, An
     return result
 
 
-def stamp_bytes(target: Path, setup_id: str, rendered: dict[str, bytes]) -> bytes:
+def stamp_bytes(target: Path, setup_id: str, profile_id: str, rendered: dict[str, bytes]) -> bytes:
+    setup_id, profile_id = resolve_setup_profile(setup_id, profile_id)
     return canonical_json(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "product_name": PRODUCT_NAME,
             "build_version": VERSION,
             "setup_id": setup_id,
+            "profile_id": profile_id,
             "canonical_target": str(target),
-            "managed_paths": {
-                name: sha256_bytes(rendered[name]) for name in (*MANAGED_FILES, *BUILDER_FILES)
-            },
+            "managed_paths": {name: sha256_bytes(rendered[name]) for name in CURRENT_PAYLOAD_PATHS},
+            "builder_projection": BUILDER_PROJECTION,
         }
     )
+
+
+def validate_common_stamp_fields(value: dict[str, Any], target: Path) -> None:
+    if value["product_name"] != PRODUCT_NAME:
+        fail("managed stamp product identity is invalid")
+    if (
+        not isinstance(value["build_version"], str)
+        or SEMVER_PATTERN.fullmatch(value["build_version"]) is None
+    ):
+        fail("managed stamp build version is invalid")
+    if value["canonical_target"] != str(target):
+        fail("managed stamp is bound to a different canonical target")
+    if not isinstance(value["setup_id"], str):
+        fail("managed stamp setup_id must be a string")
+    validate_setup_id(value["setup_id"])
+
+
+def normalize_stamp(value: dict[str, Any], target: Path) -> dict[str, Any]:
+    schema_version = value.get("schema_version")
+    if schema_version == 1:
+        require_exact_keys(value, STAMP_V1_KEYS, "managed stamp")
+        validate_common_stamp_fields(value, target)
+        raw_setup_id = value["setup_id"]
+        if raw_setup_id not in LEGACY_SETUP_PROFILES:
+            fail(f"unsupported schema-1 managed stamp setup_id: {raw_setup_id}")
+        validate_digest_map(
+            value["managed_paths"],
+            "managed stamp managed_paths",
+            LEGACY_SCHEMA1_PAYLOAD_PATHS,
+        )
+        normalized = dict(value)
+        normalized["_content_setup_id"] = CONTENT_SETUP_ID
+        normalized["_profile_id"] = legacy_profile_for_setup(raw_setup_id)
+        normalized["_legacy_setup_id"] = raw_setup_id
+        normalized["_migration_required"] = raw_setup_id == "balanced"
+        normalized["_payload_paths"] = LEGACY_SCHEMA1_PAYLOAD_PATHS
+        return normalized
+    if schema_version == 2:
+        require_exact_keys(value, STAMP_V2_KEYS, "managed stamp")
+        validate_common_stamp_fields(value, target)
+        if value["setup_id"] != CONTENT_SETUP_ID:
+            fail("schema-2 managed stamp setup_id must be nddev-builder")
+        if not isinstance(value["profile_id"], str):
+            fail("schema-2 managed stamp profile_id must be a string")
+        validate_profile_id(value["profile_id"])
+        if value["builder_projection"] != BUILDER_PROJECTION:
+            fail("schema-2 managed stamp builder projection mismatch")
+        validate_digest_map(value["managed_paths"], "managed stamp managed_paths")
+        normalized = dict(value)
+        normalized["_content_setup_id"] = CONTENT_SETUP_ID
+        normalized["_profile_id"] = value["profile_id"]
+        normalized["_legacy_setup_id"] = None
+        normalized["_migration_required"] = False
+        normalized["_payload_paths"] = CURRENT_PAYLOAD_PATHS
+        return normalized
+    fail("managed stamp schema_version is invalid")
+
+
+def load_stamp_from_bytes(content: bytes, target: Path) -> dict[str, Any]:
+    value = parse_json_object(content, f"managed stamp {target / STAMP_NAME}")
+    return normalize_stamp(value, target)
 
 
 def load_stamp(target: Path) -> dict[str, Any] | None:
@@ -1238,33 +1470,53 @@ def load_stamp(target: Path) -> dict[str, Any] | None:
         owner_only=False,
         max_bytes=METADATA_MAX_BYTES,
     )
-    value = parse_json_object(content, f"managed stamp {stamp}")
-    require_exact_keys(value, STAMP_KEYS, "managed stamp")
-    if value["schema_version"] != 1 or value["product_name"] != PRODUCT_NAME:
-        fail("managed stamp identity or schema is invalid")
-    if (
-        not isinstance(value["build_version"], str)
-        or SEMVER_PATTERN.fullmatch(value["build_version"]) is None
-    ):
-        fail("managed stamp build version is invalid")
-    if value["canonical_target"] != str(target):
-        fail("managed stamp is bound to a different canonical target")
-    if not isinstance(value["setup_id"], str):
-        fail("managed stamp setup_id must be a string")
-    validate_setup_id(value["setup_id"])
-    validate_digest_map(value["managed_paths"], "managed stamp managed_paths")
-    return value
+    return load_stamp_from_bytes(content, target)
 
 
-def settings_overlay(current: bytes, setup_id: str) -> dict[str, Any]:
+def profile_from_settings(current: bytes) -> str | None:
+    try:
+        current_settings = json.loads(current.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(current_settings, dict):
+        return None
+    tools = current_settings.get("tools")
+    if not isinstance(tools, dict):
+        return None
+    for profile_id, (approval, sandbox) in LEGACY_PROFILE_TOOL_POLICY.items():
+        if tools.get("approvalMode") == approval and tools.get("sandbox") is sandbox:
+            return profile_id
+    return None
+
+
+def profile_for_stamp(target: Path, stamp: dict[str, Any]) -> str | None:
+    del target
+    return stamp["_profile_id"]
+
+
+def rendered_settings_for_profile(profile_id: str) -> bytes:
+    setup_root = CATALOG_ROOT / CONTENT_SETUP_ID
+    settings_content, _ = read_regular_file(
+        setup_root / "settings.json",
+        f"setup {CONTENT_SETUP_ID}/settings.json",
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    settings = parse_json_object(settings_content, f"setup {CONTENT_SETUP_ID}/settings.json")
+    validate_setup_settings(CONTENT_SETUP_ID, settings)
+    return canonical_json(apply_profile_to_settings(settings, profile_id))
+
+
+def settings_overlay(current: bytes, profile_id: str) -> dict[str, Any]:
     try:
         current_settings = json.loads(current.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
     if not isinstance(current_settings, dict):
         return {}
-    _, base = render_setup(setup_id)
-    base_settings = parse_json_object(base["settings.json"], f"setup {setup_id}/settings.json")
+    base_settings = parse_json_object(
+        rendered_settings_for_profile(profile_id),
+        f"profile {profile_id} rendered settings",
+    )
     overlay: dict[str, Any] = {}
     for key, value in current_settings.items():
         if key in SETTINGS_SETUP_KEYS and value != base_settings.get(key):
@@ -1285,11 +1537,15 @@ def merge_settings(base: bytes, overlay: dict[str, Any]) -> bytes:
     return canonical_json(settings)
 
 
-def settings_managed_intact(current: bytes, setup_id: str) -> bool:
+def settings_managed_intact(current: bytes, profile_id: str | None) -> bool:
+    if profile_id is None:
+        return False
     try:
         current_settings = json.loads(current.decode("utf-8"))
-        _, rendered = render_setup(setup_id)
-        base = parse_json_object(rendered["settings.json"], f"setup {setup_id}/settings.json")
+        base = parse_json_object(
+            rendered_settings_for_profile(profile_id),
+            f"profile {profile_id} rendered settings",
+        )
     except (UnicodeDecodeError, json.JSONDecodeError, QwenCodeSetupError):
         return False
     if not isinstance(current_settings, dict):
@@ -1307,6 +1563,11 @@ def inspect_target(target: Path) -> dict[str, Any]:
         return {
             "state": "missing",
             "setup_id": None,
+            "profile_id": None,
+            "legacy_setup_id": None,
+            "raw_setup_id": None,
+            "stamp_schema_version": None,
+            "migration_required": False,
             "build_version": None,
             "drift": [],
             "unmanaged_managed_paths": [],
@@ -1315,7 +1576,7 @@ def inspect_target(target: Path) -> dict[str, Any]:
         }
     stamp = load_stamp(target)
     existing: list[str] = []
-    for name in (*MANAGED_FILES, *BUILDER_FILES):
+    for name in ALL_PAYLOAD_PATHS:
         path = target_path(target, name)
         if path_exists_no_follow(path):
             require_regular_file(path, f"managed path {path}")
@@ -1324,6 +1585,11 @@ def inspect_target(target: Path) -> dict[str, Any]:
         return {
             "state": "unmanaged",
             "setup_id": None,
+            "profile_id": None,
+            "legacy_setup_id": None,
+            "raw_setup_id": None,
+            "stamp_schema_version": None,
+            "migration_required": False,
             "build_version": None,
             "drift": [],
             "unmanaged_managed_paths": existing,
@@ -1332,9 +1598,13 @@ def inspect_target(target: Path) -> dict[str, Any]:
             else "missing",
             "cleanup_pending": cleanup_pending,
         }
-    expected = validate_digest_map(stamp["managed_paths"], "managed stamp managed_paths")
+    expected = validate_digest_map(
+        stamp["managed_paths"],
+        "managed stamp managed_paths",
+        stamp["_payload_paths"],
+    )
     drift: list[str] = []
-    for name in (*MANAGED_FILES, *BUILDER_FILES):
+    for name in stamp["_payload_paths"]:
         path = target_path(target, name)
         snapshot = snapshot_file(path, owner_only=False)
         if expected[name] is None or snapshot is None:
@@ -1348,7 +1618,7 @@ def inspect_target(target: Path) -> dict[str, Any]:
             continue
         if name == "settings.json" and settings_managed_intact(
             read_regular_file(path, f"managed path {path}")[0],
-            stamp["setup_id"],
+            profile_for_stamp(target, stamp),
         ):
             continue
         drift.append(name)
@@ -1359,7 +1629,12 @@ def inspect_target(target: Path) -> dict[str, Any]:
         drift.append(STAMP_NAME)
     return {
         "state": "managed",
-        "setup_id": stamp["setup_id"],
+        "setup_id": stamp["_content_setup_id"],
+        "profile_id": profile_for_stamp(target, stamp),
+        "legacy_setup_id": stamp["_legacy_setup_id"],
+        "raw_setup_id": stamp["setup_id"],
+        "stamp_schema_version": stamp["schema_version"],
+        "migration_required": stamp["_migration_required"],
         "build_version": stamp["build_version"],
         "drift": drift,
         "unmanaged_managed_paths": [],
@@ -1901,6 +2176,7 @@ def prune_empty_managed_dirs(target: Path) -> None:
         "extensions/nddev-builder/agents",
         "extensions/nddev-builder",
         "extensions",
+        ".claude",
     ):
         path = target / relative
         try:
@@ -2026,7 +2302,7 @@ def create_backup(
     status = inspect_target(target)
     desired: dict[str, bytes | None] = {name: None for name in MANAGED_PATHS}
     records: dict[str, dict[str, Any] | None] = {}
-    for name in (*MANAGED_FILES, *BUILDER_FILES):
+    for name in ALL_PAYLOAD_PATHS:
         path = target_path(target, name)
         if path_exists_no_follow(path):
             content, _ = read_regular_file(path, f"managed path {path}", owner_only=True)
@@ -2062,7 +2338,7 @@ def create_backup(
         "build_version": VERSION,
         "slot": slot,
         "canonical_target": str(target),
-        "source_setup_id": status["setup_id"] if status["state"] == "managed" else None,
+        "source_setup_id": status["raw_setup_id"] if status["state"] == "managed" else None,
         "managed_paths": records,
         "stamp_sha256": stamp_digest,
     }
@@ -2176,23 +2452,29 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
 
 
 def desired_for_setup(
-    target: Path, setup_id: str, *, preserve_from_current: bool
-) -> dict[str, bytes]:
-    _, rendered = render_setup(setup_id)
+    target: Path, setup_id: str, profile_id: str, *, preserve_from_current: bool
+) -> dict[str, bytes | None]:
+    _, rendered = render_setup(setup_id, profile_id)
     if preserve_from_current and path_exists_no_follow(target / "settings.json"):
         current, _ = read_regular_file(target / "settings.json", "managed settings.json")
+        current_stamp = load_stamp(target)
+        current_profile = (
+            profile_for_stamp(target, current_stamp) if current_stamp is not None else profile_id
+        )
         rendered["settings.json"] = merge_settings(
             rendered["settings.json"],
-            settings_overlay(
-                current, load_stamp(target)["setup_id"] if load_stamp(target) else setup_id
-            ),
+            settings_overlay(current, current_profile or profile_id),
         )
-    return {**rendered, STAMP_NAME: stamp_bytes(target, setup_id, rendered)}
+    desired: dict[str, bytes | None] = {name: None for name in MANAGED_PATHS}
+    for name, content in rendered.items():
+        desired[name] = content
+    desired[STAMP_NAME] = stamp_bytes(target, setup_id, profile_id, rendered)
+    return desired
 
 
-def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
-    validate_setup_id(setup_id)
-    render_setup(setup_id)
+def plan_setup(target: Path, setup_id: str, profile_id: str) -> dict[str, Any]:
+    setup_id, profile_id = resolve_setup_profile(setup_id, profile_id)
+    render_setup(setup_id, profile_id)
     status = inspect_target(target)
     if status["state"] == "unmanaged" and status["unmanaged_managed_paths"]:
         fail(
@@ -2203,13 +2485,14 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
         fail(f"managed target has drift: {', '.join(status['drift'])}")
     if status["state"] in {"missing", "unmanaged"}:
         operation = "install"
-    elif status["setup_id"] == setup_id:
+    elif status["setup_id"] == setup_id and status["profile_id"] == profile_id:
         operation = "update"
     else:
         operation = "switch"
     desired = desired_for_setup(
         target,
         setup_id,
+        profile_id,
         preserve_from_current=status["state"] == "managed",
     )
     changes: list[str] = []
@@ -2217,7 +2500,8 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
         path = target_path(target, name)
         snapshot = snapshot_file(path, owner_only=False)
         current = snapshot.digest if snapshot is not None else None
-        wanted = sha256_bytes(desired[name]) if name in desired else None
+        content = desired.get(name)
+        wanted = sha256_bytes(content) if content is not None else None
         if current != wanted:
             changes.append(name)
     return {
@@ -2225,6 +2509,10 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
         "command": "plan",
         "target": str(target),
         "setup_id": setup_id,
+        "profile_id": profile_id,
+        "current_profile_id": status["profile_id"],
+        "legacy_setup_id": status["legacy_setup_id"],
+        "migration_required": status["migration_required"],
         "operation": operation,
         "changes": changes,
         "backup_required": status["state"] == "managed",
@@ -2239,8 +2527,9 @@ def rollback_to(target: Path, rollback_desired: dict[str, bytes | None]) -> None
     replace_managed_state(target, rollback_desired, current, root=root)
 
 
-def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
-    plan = plan_setup(target, setup_id)
+def mutate_setup(target: Path, setup_id: str, profile_id: str, command: str) -> dict[str, Any]:
+    setup_id, profile_id = resolve_setup_profile(setup_id, profile_id)
+    plan = plan_setup(target, setup_id, profile_id)
     if command == "install" and plan["operation"] == "switch":
         fail("install cannot change setup identity; use switch")
     if command == "switch" and plan["operation"] != "switch":
@@ -2251,6 +2540,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
             "command": command,
             "target": str(target),
             "setup_id": setup_id,
+            "profile_id": profile_id,
             "changed": [],
             "backup_slot": None,
             "cleanup_pending": plan["cleanup_pending"],
@@ -2258,7 +2548,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
     existed_before = target.exists()
     with target_lock(target):
         prior_status = inspect_target(target)
-        plan = plan_setup(target, setup_id)
+        plan = plan_setup(target, setup_id, profile_id)
         if command == "install" and plan["operation"] == "switch":
             fail("install cannot change setup identity; use switch")
         if command == "switch" and plan["operation"] != "switch":
@@ -2276,14 +2566,15 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
             desired = desired_for_setup(
                 target,
                 setup_id,
+                profile_id,
                 preserve_from_current=prior_status["state"] == "managed",
             )
             root = require_control_root(create=True)
 
             def postcondition() -> None:
                 final = require_clean_managed(target)
-                if final["setup_id"] != setup_id:
-                    fail("postcondition failed: setup identity mismatch")
+                if final["setup_id"] != setup_id or final["profile_id"] != profile_id:
+                    fail("postcondition failed: setup/profile identity mismatch")
 
             managed_cleanup_pending = replace_managed_state(
                 target,
@@ -2301,6 +2592,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
         "command": command,
         "target": str(target),
         "setup_id": setup_id,
+        "profile_id": profile_id,
         "changed": plan["changes"],
         "backup_slot": backup_slot,
         "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
@@ -2320,6 +2612,13 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         envelope, restore_desired = load_backup(target, slot)
         if envelope["source_setup_id"] is None:
             fail("selected backup does not contain a managed Qwen Code setup")
+        restore_stamp_content = restore_desired.get(STAMP_NAME)
+        if restore_stamp_content is None:
+            fail("selected backup is missing the managed Qwen Code stamp")
+        restored_stamp = load_stamp_from_bytes(restore_stamp_content, target)
+        restored_setup_id = restored_stamp["_content_setup_id"]
+        restored_profile_id = restored_stamp["_profile_id"]
+        restored_legacy_setup_id = restored_stamp["_legacy_setup_id"]
         before = snapshot_managed(target, owner_only=True)
         rollback_slot, rollback_desired, backup_cleanup_pending = create_backup(
             target, exclude=slot
@@ -2331,7 +2630,10 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
 
             def postcondition() -> None:
                 final = require_clean_managed(target)
-                if final["setup_id"] != envelope["source_setup_id"]:
+                if (
+                    final["raw_setup_id"] != restored_stamp["setup_id"]
+                    or final["profile_id"] != restored_profile_id
+                ):
                     fail("postcondition failed: restored setup identity mismatch")
 
             managed_cleanup_pending = replace_managed_state(
@@ -2348,7 +2650,9 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         "schema_version": 1,
         "command": "restore",
         "target": str(target),
-        "setup_id": envelope["source_setup_id"],
+        "setup_id": restored_setup_id,
+        "profile_id": restored_profile_id,
+        "legacy_setup_id": restored_legacy_setup_id,
         "restored_backup_slot": slot,
         "rollback_backup_slot": rollback_slot,
         "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
@@ -2379,6 +2683,8 @@ def remove_setup(target: Path) -> dict[str, Any]:
         "command": "remove",
         "target": str(target),
         "removed_setup_id": status["setup_id"],
+        "removed_profile_id": status["profile_id"],
+        "removed_legacy_setup_id": status["legacy_setup_id"],
         "backup_slot": backup_slot,
         "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
     }
@@ -2457,6 +2763,45 @@ def launch_environment(target: Path) -> dict[str, str]:
         }
     )
     return env
+
+
+def user_access(path: Path, mode: int) -> bool:
+    try:
+        return os.access(path, mode, effective_ids=True)
+    except (TypeError, NotImplementedError):
+        return os.access(path, mode)
+
+
+def capture_caller_cwd() -> str:
+    try:
+        return str(Path.cwd().resolve(strict=True))
+    except OSError as exc:
+        fail(f"launch workspace could not be captured: {exc}")
+
+
+def resolve_launch_workspace(raw_workspace: str | None, caller_cwd: str | None) -> Path:
+    explicit = raw_workspace is not None
+    raw = raw_workspace if explicit else caller_cwd
+    if raw is None:
+        fail("launch workspace could not be captured")
+    if explicit and raw.startswith("~"):
+        fail("--workspace must be an absolute path without user expansion")
+    workspace = Path(os.path.normpath(raw))
+    if not workspace.is_absolute():
+        fail("--workspace must be an absolute path")
+    try:
+        info = workspace.lstat()
+    except FileNotFoundError:
+        fail(f"launch workspace does not exist: {workspace}")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"launch workspace must be a real directory: {workspace}")
+    parents = list(workspace.parents)
+    for ancestor in reversed(parents):
+        if not user_access(ancestor, os.X_OK):
+            fail(f"launch workspace parent is not traversable: {ancestor}")
+    if not user_access(workspace, os.R_OK | os.X_OK):
+        fail(f"launch workspace is not accessible: {workspace}")
+    return workspace
 
 
 def sri_sha512_bytes(integrity: str) -> bytes:
@@ -3548,11 +3893,16 @@ def spawn_qwen_child(
     executable: Path,
     child_args: list[str],
     environment: dict[str, str],
+    workspace: Path,
     revalidate: Any,
 ) -> int:
     try:
         revalidate()
-        process = subprocess.Popen([str(executable), *child_args], env=environment)
+        process = subprocess.Popen(
+            [str(executable), *child_args],
+            env=environment,
+            cwd=str(workspace),
+        )
         revalidate()
     except FileNotFoundError:
         fail("qwen executable disappeared before launch")
@@ -3569,6 +3919,9 @@ def first_qwen_scope_override(child_args: list[str]) -> str | None:
             return None
         if argument in QWEN_SCOPE_FLAGS_WITHOUT_VALUE or argument in QWEN_SCOPE_FLAGS_WITH_VALUE:
             return argument
+        for flag in QWEN_SCOPE_SHORT_FLAGS_WITH_VALUE:
+            if argument.startswith(flag) and argument != flag:
+                return flag
         if argument.startswith("--"):
             flag = argument.split("=", 1)[0]
             if flag in QWEN_SCOPE_FLAGS_WITH_VALUE and "=" in argument:
@@ -3576,7 +3929,7 @@ def first_qwen_scope_override(child_args: list[str]) -> str | None:
     return None
 
 
-def launch_qwen(target: Path, child_args: list[str]) -> int:
+def launch_qwen(target: Path, child_args: list[str], workspace: Path) -> int:
     forwarded = child_args[1:] if child_args[:1] == ["--"] else child_args
     override = first_qwen_scope_override(forwarded)
     if override is not None:
@@ -3595,7 +3948,13 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
             fail_concurrent("Qwen Code launch source changed before child handoff")
 
     try:
-        return spawn_qwen_child(image.executable, forwarded, environment, revalidate_launch)
+        return spawn_qwen_child(
+            image.executable,
+            forwarded,
+            environment,
+            workspace,
+            revalidate_launch,
+        )
     finally:
         cleanup_launch_image(image)
 
@@ -3683,14 +4042,22 @@ def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
 def human_output(value: dict[str, Any]) -> str:
     command = value.get("command")
     if command == "list":
-        return "\n".join(f"{item['id']}: {item['description']}" for item in value["setups"])
+        setups = ", ".join(item["id"] for item in value["setups"])
+        profiles = ", ".join(item["id"] for item in value["profiles"])
+        return (
+            f"setups: {setups}; profiles: {profiles}; default profile: {value['default_profile']}"
+        )
     if command == "status":
         setup = f" ({value['setup_id']})" if value["setup_id"] else ""
+        profile = f" profile={value['profile_id']}" if value.get("profile_id") else ""
         drift = f"; drift={','.join(value['drift'])}" if value["drift"] else ""
-        return f"{value['state']}{setup}: {value['target']}{drift}"
+        return f"{value['state']}{setup}{profile}: {value['target']}{drift}"
     if command == "plan":
         changes = ", ".join(value["changes"]) or "none"
-        return f"{value['operation']} {value['setup_id']} at {value['target']}; changes: {changes}"
+        return (
+            f"{value['operation']} {value['setup_id']} profile={value['profile_id']} "
+            f"at {value['target']}; changes: {changes}"
+        )
     if command == "software-status":
         return (
             f"installed={value['installed']} current={value['current']} version={value['version']}"
@@ -3723,7 +4090,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     for command in ("plan", "install", "switch"):
         command_parser = subparsers.add_parser(command, help=f"{command.title()} a setup.")
-        command_parser.add_argument("--setup", required=True)
+        command_parser.add_argument("--setup")
+        command_parser.add_argument("--profile", choices=PROFILE_IDS)
         add_target(command_parser)
 
     restore_parser = subparsers.add_parser("restore", help="Restore a target-bound backup.")
@@ -3748,6 +4116,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_target(launch_parser)
     launch_parser.add_argument(
+        "--workspace",
+        help="Existing absolute project directory used as the launched child cwd.",
+    )
+    launch_parser.add_argument(
         "qwen_args",
         nargs=argparse.REMAINDER,
         help="Arguments forwarded to Qwen Code after --.",
@@ -3761,7 +4133,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run(args: argparse.Namespace) -> dict[str, Any] | int:
     if args.command == "list":
-        return {"schema_version": 1, "command": "list", "setups": list_setups()}
+        return {
+            "schema_version": 1,
+            "command": "list",
+            "setups": list_setups(),
+            "profiles": list_profiles(),
+            "default_profile": DEFAULT_PROFILE_ID,
+        }
     if args.command == "status":
         return coordinated_target_read(
             args.target,
@@ -3773,11 +4151,14 @@ def run(args: argparse.Namespace) -> dict[str, Any] | int:
             },
         )
     if args.command == "plan":
-        return coordinated_target_read(args.target, lambda target: plan_setup(target, args.setup))
+        return coordinated_target_read(
+            args.target,
+            lambda target: plan_setup(target, args.setup, args.profile),
+        )
     if args.command in {"install", "switch"}:
         return coordinated_target_mutation(
             args.target,
-            lambda target: mutate_setup(target, args.setup, args.command),
+            lambda target: mutate_setup(target, args.setup, args.profile, args.command),
         )
     if args.command == "restore":
         return coordinated_target_mutation(
@@ -3798,9 +4179,13 @@ def run(args: argparse.Namespace) -> dict[str, Any] | int:
     if args.command == "remove-cli":
         return coordinated_target_mutation(args.target, remove_cli)
     if args.command == "launch":
+        workspace = resolve_launch_workspace(
+            args.workspace,
+            getattr(args, "caller_cwd", None),
+        )
         return coordinated_target_mutation(
             args.target,
-            lambda target: launch_qwen(target, list(args.qwen_args)),
+            lambda target: launch_qwen(target, list(args.qwen_args), workspace),
         )
     fail(f"unsupported command: {args.command}")
 
@@ -3808,6 +4193,8 @@ def run(args: argparse.Namespace) -> dict[str, Any] | int:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        if args.command == "launch" and args.workspace is None:
+            args.caller_cwd = capture_caller_cwd()
         result = run(args)
     except (QwenCodeSetupError, OSError, subprocess.SubprocessError) as exc:
         if isinstance(exc, OSError):

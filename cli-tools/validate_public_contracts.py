@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +26,25 @@ SEMVER = re.compile(
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?\Z"
 )
-EXPECTED_SETUP_POLICY = {
-    "safe": {"approvalMode": "default", "sandbox": True},
-    "balanced": {"approvalMode": "auto-edit", "sandbox": True},
+EXPECTED_SETUP_IDS = ["nddev-builder"]
+EXPECTED_PROFILE_POLICY = {
     "full-auto": {"approvalMode": "yolo", "sandbox": False},
+    "safe": {"approvalMode": "default", "sandbox": True},
 }
-EXPECTED_MANAGED_FILES = ["settings.json", "QWEN.md", "AGENTS.md", "CLAUDE.md"]
+EXPECTED_LEGACY_PROFILE_POLICY = {
+    "balanced": {"approvalMode": "auto-edit", "sandbox": True},
+}
+EXPECTED_MANAGED_FILES = ["settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"]
+EXPECTED_BLOCKED_WORKSPACE_CONTROLS = [
+    "--include-directories",
+    "--add-dir",
+    "--includeDirectories",
+    "--addDir",
+    "--worktree",
+    "--workspace",
+    "--cwd",
+]
+EXPECTED_BLOCKED_SHORT_VALUE_FORMS = ["-e", "-i", "-m", "-o", "-p", "-r"]
 EXPECTED_QWEN = {
     "version": "0.21.1",
     "release_tag": "v0.21.1",
@@ -297,28 +312,109 @@ def validate_versions(errors: list[str]) -> None:
             "Ubuntu version floor must be null",
             errors,
         )
+    configuration = baseline.get("configuration")
+    require(isinstance(configuration, dict), "baseline configuration block missing", errors)
+    if isinstance(configuration, dict):
+        require(
+            configuration.get("global_context_file") == "QWEN.md",
+            "baseline Qwen context file mismatch",
+            errors,
+        )
+        require(
+            configuration.get("agents_compatibility_file") == "AGENTS.md",
+            "baseline AGENTS compatibility file mismatch",
+            errors,
+        )
+        require(
+            configuration.get("qwen_native_claude_compatibility_observation") == "CLAUDE.md",
+            "baseline native Claude observation mismatch",
+            errors,
+        )
+        require(
+            configuration.get("nddev_managed_claude_bridge") == ".claude/CLAUDE.md",
+            "baseline managed Claude bridge mismatch",
+            errors,
+        )
+    grammar = baseline.get("launch_scope_grammar")
+    require(isinstance(grammar, dict), "baseline launch_scope_grammar missing", errors)
+    if isinstance(grammar, dict):
+        require(
+            grammar.get("normal_launch_primary_workspace_flag") is None,
+            "baseline must not invent native primary workspace flag",
+            errors,
+        )
+        require(
+            grammar.get("normal_launch_cwd_flag") is None,
+            "baseline normal launch cwd flag mismatch",
+            errors,
+        )
+        require(
+            grammar.get("normal_launch_project_flag") is None,
+            "baseline normal launch project flag mismatch",
+            errors,
+        )
+        require(
+            grammar.get("blocked_workspace_controls") == EXPECTED_BLOCKED_WORKSPACE_CONTROLS,
+            "baseline blocked workspace controls mismatch",
+            errors,
+        )
+        require(
+            grammar.get("blocked_short_value_forms") == EXPECTED_BLOCKED_SHORT_VALUE_FORMS,
+            "baseline blocked short value forms mismatch",
+            errors,
+        )
+        require(
+            grammar.get("assignment_forms_blocked") is True,
+            "baseline assignment forms policy mismatch",
+            errors,
+        )
+        require(
+            grammar.get("attached_short_value_forms_blocked") is True,
+            "baseline attached short forms policy mismatch",
+            errors,
+        )
 
 
 def validate_setups(errors: list[str]) -> None:
     manifest = read_json("build/manifest.json")
     contract = read_json("config/nddev-contract.json")
-    expected_ids = list(EXPECTED_SETUP_POLICY)
-    require(manifest.get("setup_ids") == expected_ids, "manifest setup_ids mismatch", errors)
+    expected_profiles = list(EXPECTED_PROFILE_POLICY)
+    expected_legacy = ["safe", "balanced", "full-auto"]
+    require(manifest.get("setup_ids") == EXPECTED_SETUP_IDS, "manifest setup_ids mismatch", errors)
+    require(
+        manifest.get("profile_ids") == expected_profiles, "manifest profile_ids mismatch", errors
+    )
+    require(
+        manifest.get("default_profile") == "full-auto",
+        "manifest default_profile mismatch",
+        errors,
+    )
+    require(
+        manifest.get("legacy_setup_ids") == expected_legacy,
+        "manifest legacy setup ids mismatch",
+        errors,
+    )
     permission_policy = manifest.get("permission_policy")
     require(isinstance(permission_policy, dict), "manifest permission_policy missing", errors)
     if isinstance(permission_policy, dict):
         require(
-            permission_policy.get("configuration_surface") == "tools.approvalMode",
+            permission_policy.get("configuration_surface")
+            == "profiles/<profile-id>/profile.json:settings_overlay.tools",
             "permission surface mismatch",
             errors,
         )
         require(
-            permission_policy.get("setups") == EXPECTED_SETUP_POLICY,
-            "permission setup policy mismatch",
+            permission_policy.get("profiles") == EXPECTED_PROFILE_POLICY,
+            "permission profile policy mismatch",
             errors,
         )
         require(
-            permission_policy.get("source") == "setups/<id>/settings.json",
+            permission_policy.get("legacy_profiles") == EXPECTED_LEGACY_PROFILE_POLICY,
+            "permission legacy profile policy mismatch",
+            errors,
+        )
+        require(
+            permission_policy.get("source") == "profiles/<id>/profile.json",
             "permission policy source mismatch",
             errors,
         )
@@ -326,13 +422,52 @@ def validate_setups(errors: list[str]) -> None:
     require(isinstance(setup_system, dict), "contract setup_system missing", errors)
     if isinstance(setup_system, dict):
         require(
-            setup_system.get("setup_ids") == expected_ids, "contract setup_ids mismatch", errors
+            setup_system.get("setup_ids") == EXPECTED_SETUP_IDS,
+            "contract setup_ids mismatch",
+            errors,
+        )
+        require(
+            setup_system.get("profile_ids") == expected_profiles,
+            "contract profile_ids mismatch",
+            errors,
+        )
+        require(
+            setup_system.get("default_profile") == "full-auto",
+            "contract default_profile mismatch",
+            errors,
+        )
+        require(
+            setup_system.get("legacy_setup_ids") == expected_legacy,
+            "contract legacy setup ids mismatch",
+            errors,
         )
         require(
             setup_system.get("builder_default_on") is True, "builder must be default-on", errors
         )
+    managed_state = contract.get("managed_state")
+    require(isinstance(managed_state, dict), "contract managed_state missing", errors)
+    if isinstance(managed_state, dict):
+        require(managed_state.get("stamp_schema") == 2, "contract stamp_schema mismatch", errors)
+        require(
+            managed_state.get("managed_files") == EXPECTED_MANAGED_FILES,
+            "contract managed_files mismatch",
+            errors,
+        )
+        legacy = managed_state.get("legacy_stamp_schema")
+        require(isinstance(legacy, dict), "contract legacy stamp schema missing", errors)
+        if isinstance(legacy, dict):
+            require(
+                legacy.get("readable_setup_ids") == ["safe", "full-auto"],
+                "contract legacy readable setup ids mismatch",
+                errors,
+            )
+            require(
+                legacy.get("migration_required_setup_ids") == ["balanced"],
+                "contract legacy migration setup ids mismatch",
+                errors,
+            )
 
-    for setup_id, policy in EXPECTED_SETUP_POLICY.items():
+    for setup_id in EXPECTED_SETUP_IDS:
         setup = read_json(f"setups/{setup_id}/setup.json")
         settings = read_json(f"setups/{setup_id}/settings.json")
         require(setup.get("id") == setup_id, f"{setup_id} setup id mismatch", errors)
@@ -351,23 +486,35 @@ def validate_setups(errors: list[str]) -> None:
             f"{setup_id} builder must be default-on",
             errors,
         )
+        require(
+            setup.get("default_profile") == "full-auto",
+            f"{setup_id} default_profile mismatch",
+            errors,
+        )
+        require(
+            setup.get("profiles") == expected_profiles,
+            f"{setup_id} profile list mismatch",
+            errors,
+        )
         tools = settings.get("tools")
         require(isinstance(tools, dict), f"{setup_id} tools block missing", errors)
         if isinstance(tools, dict):
             require(
-                tools.get("approvalMode") == policy["approvalMode"],
-                f"{setup_id} approvalMode mismatch",
+                "approvalMode" not in tools,
+                f"{setup_id} must not own approvalMode directly",
                 errors,
             )
             require(
-                tools.get("sandbox") is policy["sandbox"], f"{setup_id} sandbox mismatch", errors
+                "sandbox" not in tools,
+                f"{setup_id} must not own sandbox directly",
+                errors,
             )
         require(
             settings.get("context") == {"fileName": ["QWEN.md"]},
             f"{setup_id} context file mismatch",
             errors,
         )
-        for name in ("QWEN.md", "AGENTS.md", "CLAUDE.md"):
+        for name in ("QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"):
             require(
                 (ROOT / "setups" / setup_id / name).is_file(), f"{setup_id} missing {name}", errors
             )
@@ -377,6 +524,108 @@ def validate_setups(errors: list[str]) -> None:
             f"{setup_id} must disable usage statistics",
             errors,
         )
+    for profile_id, policy in EXPECTED_PROFILE_POLICY.items():
+        profile = read_json(f"profiles/{profile_id}/profile.json")
+        require(profile.get("id") == profile_id, f"{profile_id} profile id mismatch", errors)
+        overlay = profile.get("settings_overlay")
+        require(isinstance(overlay, dict), f"{profile_id} settings_overlay missing", errors)
+        tools = overlay.get("tools") if isinstance(overlay, dict) else None
+        require(isinstance(tools, dict), f"{profile_id} tools overlay missing", errors)
+        if isinstance(tools, dict):
+            require(
+                tools.get("approvalMode") == policy["approvalMode"],
+                f"{profile_id} approvalMode mismatch",
+                errors,
+            )
+            require(
+                tools.get("sandbox") is policy["sandbox"],
+                f"{profile_id} sandbox mismatch",
+                errors,
+            )
+    stamp_policy = manifest.get("stamp_policy")
+    require(isinstance(stamp_policy, dict), "manifest stamp_policy missing", errors)
+    if isinstance(stamp_policy, dict):
+        require(stamp_policy.get("schema_version") == 2, "manifest stamp schema mismatch", errors)
+        require(
+            stamp_policy.get("setup_id") == "nddev-builder",
+            "manifest stamp setup mismatch",
+            errors,
+        )
+        require(
+            stamp_policy.get("profile_field") == "profile_id",
+            "manifest stamp profile field mismatch",
+            errors,
+        )
+        require(
+            stamp_policy.get("builder_projection_field") == "builder_projection",
+            "manifest stamp builder projection field mismatch",
+            errors,
+        )
+
+    _, rendered = nddev_qwen_code.render_setup("nddev-builder", "safe")
+    stamp = json.loads(
+        nddev_qwen_code.stamp_bytes(Path("/tmp/qwen"), "nddev-builder", "safe", rendered).decode(
+            "utf-8"
+        )
+    )
+    require(stamp.get("schema_version") == 2, "manager stamp schema mismatch", errors)
+    require(stamp.get("setup_id") == "nddev-builder", "manager stamp setup mismatch", errors)
+    require(stamp.get("profile_id") == "safe", "manager stamp profile mismatch", errors)
+    require(
+        stamp.get("builder_projection") == nddev_qwen_code.BUILDER_PROJECTION,
+        "manager stamp builder projection mismatch",
+        errors,
+    )
+    require(
+        sorted(stamp.get("managed_paths", {})) == sorted(nddev_qwen_code.CURRENT_PAYLOAD_PATHS),
+        "manager stamp managed paths mismatch",
+        errors,
+    )
+    legacy_paths = {name: "0" * 64 for name in nddev_qwen_code.LEGACY_SCHEMA1_PAYLOAD_PATHS}
+    for setup_id, expected_profile, migration_required in (
+        ("safe", "safe", False),
+        ("full-auto", "full-auto", False),
+        ("balanced", None, True),
+    ):
+        legacy_stamp = {
+            "schema_version": 1,
+            "product_name": nddev_qwen_code.PRODUCT_NAME,
+            "build_version": "0.1.0",
+            "setup_id": setup_id,
+            "canonical_target": "/tmp/qwen",
+            "managed_paths": legacy_paths,
+        }
+        normalized = nddev_qwen_code.normalize_stamp(legacy_stamp, Path("/tmp/qwen"))
+        require(
+            normalized["_content_setup_id"] == "nddev-builder",
+            f"legacy {setup_id} content setup normalization mismatch",
+            errors,
+        )
+        require(
+            normalized["_profile_id"] == expected_profile,
+            f"legacy {setup_id} profile normalization mismatch",
+            errors,
+        )
+        require(
+            normalized["_migration_required"] is migration_required,
+            f"legacy {setup_id} migration flag mismatch",
+            errors,
+        )
+    legacy_backup_records = {
+        name: {"path": name, "size": 0, "sha256": "0" * 64}
+        for name in nddev_qwen_code.LEGACY_SCHEMA1_PAYLOAD_PATHS
+    }
+    require(
+        sorted(
+            nddev_qwen_code.validate_backup_record_map(
+                legacy_backup_records,
+                "legacy backup",
+            )
+        )
+        == sorted(nddev_qwen_code.LEGACY_SCHEMA1_PAYLOAD_PATHS),
+        "legacy backup payload map was not accepted",
+        errors,
+    )
 
 
 def validate_runtime_and_software(errors: list[str]) -> None:
@@ -405,6 +654,48 @@ def validate_runtime_and_software(errors: list[str]) -> None:
             f"{owner} QWEN_RUNTIME_DIR mismatch",
             errors,
         )
+        workspace_scope = surface.get("workspace_scope")
+        require(isinstance(workspace_scope, dict), f"{owner} workspace_scope missing", errors)
+        if isinstance(workspace_scope, dict):
+            require(
+                workspace_scope.get("manager_option")
+                == "--workspace <absolute-existing-directory>",
+                f"{owner} workspace manager option mismatch",
+                errors,
+            )
+            require(
+                workspace_scope.get("default") == "captured caller cwd",
+                f"{owner} workspace default mismatch",
+                errors,
+            )
+            require(
+                workspace_scope.get("native_qwen_primary_workspace_flag") is None,
+                f"{owner} must not invent a native primary workspace flag",
+                errors,
+            )
+            require(
+                workspace_scope.get("child_cwd_explicit") is True,
+                f"{owner} child cwd must be explicit",
+                errors,
+            )
+            require(
+                workspace_scope.get("blocked_native_workspace_controls")
+                == EXPECTED_BLOCKED_WORKSPACE_CONTROLS,
+                f"{owner} blocked workspace controls mismatch",
+                errors,
+            )
+            require(
+                workspace_scope.get("blocked_short_value_forms")
+                == EXPECTED_BLOCKED_SHORT_VALUE_FORMS,
+                f"{owner} blocked short value forms mismatch",
+                errors,
+            )
+            require(
+                workspace_scope.get("grammar_source_ref")
+                == "references/qwen-code-baseline.json:launch_scope_grammar",
+                f"{owner} launch grammar source ref mismatch",
+                errors,
+            )
     for owner, surface in (
         ("manifest", manifest.get("software_install")),
         ("contract", contract.get("software_install")),
@@ -580,12 +871,22 @@ def validate_builder(errors: list[str]) -> None:
 
 def validate_parser_contract(errors: list[str]) -> None:
     require(hasattr(nddev_qwen_code, "parse_args"), "manager must expose parse_args(argv)", errors)
+
+    def expect_workspace_rejection(raw: str | None, caller: str | None, label: str) -> None:
+        try:
+            nddev_qwen_code.resolve_launch_workspace(raw, caller)
+        except nddev_qwen_code.QwenCodeSetupError:
+            return
+        errors.append(f"launch workspace validation accepted {label}")
+
     examples = (
         ["list"],
         ["status", "--target", "/tmp/qwen"],
-        ["plan", "--setup", "safe", "--target", "/tmp/qwen"],
+        ["plan", "--target", "/tmp/qwen"],
+        ["install", "--target", "/tmp/qwen"],
         ["install", "--setup", "safe", "--target", "/tmp/qwen"],
-        ["switch", "--setup", "balanced", "--target", "/tmp/qwen"],
+        ["install", "--setup", "full-auto", "--target", "/tmp/qwen"],
+        ["switch", "--setup", "nddev-builder", "--profile", "safe", "--target", "/tmp/qwen"],
         ["restore", "--backup", "0", "--target", "/tmp/qwen"],
         ["remove", "--target", "/tmp/qwen"],
         ["builder-status", "--target", "/tmp/qwen"],
@@ -594,12 +895,157 @@ def validate_parser_contract(errors: list[str]) -> None:
         ["update-cli", "--target", "/tmp/qwen"],
         ["remove-cli", "--target", "/tmp/qwen"],
         ["launch", "--target", "/tmp/qwen", "--", "--version"],
+        ["launch", "--target", "/tmp/qwen", "--workspace", str(ROOT), "--", "--version"],
     )
     for argv in examples:
         try:
             nddev_qwen_code.parse_args(list(argv))
         except SystemExit as exc:
             errors.append(f"parse_args rejected documented argv {argv!r}: {exc.code}")
+    parsed_launch = nddev_qwen_code.parse_args(
+        ["launch", "--target", "/tmp/qwen", "--workspace", str(ROOT), "--", "--version"]
+    )
+    try:
+        workspace = nddev_qwen_code.resolve_launch_workspace(parsed_launch.workspace, str(ROOT))
+    except nddev_qwen_code.QwenCodeSetupError as exc:
+        errors.append(f"launch workspace validation rejected repository root: {exc}")
+    else:
+        require(workspace == ROOT, "launch workspace resolution mismatch", errors)
+    try:
+        captured = nddev_qwen_code.resolve_launch_workspace(None, str(ROOT.resolve(strict=True)))
+    except nddev_qwen_code.QwenCodeSetupError as exc:
+        errors.append(f"launch captured cwd validation rejected repository root: {exc}")
+    else:
+        require(captured == ROOT.resolve(strict=True), "captured cwd resolution mismatch", errors)
+
+    original_capture = nddev_qwen_code.capture_caller_cwd
+    original_run = nddev_qwen_code.run
+    try:
+        explicit_capture_calls: list[str] = []
+        explicit_seen: list[tuple[str | None, str | None]] = []
+
+        def failing_capture() -> str:
+            explicit_capture_calls.append("capture")
+            raise AssertionError("explicit workspace must not capture ambient cwd")
+
+        def record_explicit_run(args: Any) -> int:
+            explicit_seen.append((args.workspace, getattr(args, "caller_cwd", None)))
+            return 0
+
+        nddev_qwen_code.capture_caller_cwd = failing_capture
+        nddev_qwen_code.run = record_explicit_run
+        explicit_rc = nddev_qwen_code.main(
+            ["launch", "--target", "/tmp/qwen", "--workspace", str(ROOT), "--", "--version"]
+        )
+        require(explicit_rc == 0, "explicit workspace launch smoke rc mismatch", errors)
+        require(
+            explicit_capture_calls == [],
+            "explicit workspace launch captured ambient cwd",
+            errors,
+        )
+        require(
+            explicit_seen == [(str(ROOT), None)],
+            "explicit workspace launch smoke argument mismatch",
+            errors,
+        )
+
+        default_capture_calls: list[str] = []
+        default_seen: list[tuple[str | None, str | None]] = []
+
+        def counting_capture() -> str:
+            default_capture_calls.append("capture")
+            return str(ROOT)
+
+        def record_default_run(args: Any) -> int:
+            default_seen.append((args.workspace, getattr(args, "caller_cwd", None)))
+            return 0
+
+        nddev_qwen_code.capture_caller_cwd = counting_capture
+        nddev_qwen_code.run = record_default_run
+        default_rc = nddev_qwen_code.main(["launch", "--target", "/tmp/qwen", "--", "--version"])
+        require(default_rc == 0, "default workspace launch smoke rc mismatch", errors)
+        require(
+            default_capture_calls == ["capture"],
+            "default workspace launch did not capture cwd exactly once",
+            errors,
+        )
+        require(
+            default_seen == [(None, str(ROOT))],
+            "default workspace launch smoke argument mismatch",
+            errors,
+        )
+    except AssertionError as exc:
+        errors.append(str(exc))
+    finally:
+        nddev_qwen_code.capture_caller_cwd = original_capture
+        nddev_qwen_code.run = original_run
+
+    expect_workspace_rejection(str(ROOT / ".nddev-qwen-missing-workspace"), None, "missing path")
+    expect_workspace_rejection(str(ROOT / "README.md"), None, "regular file")
+    expect_workspace_rejection("~/nddev-qwen", None, "tilde path")
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-workspace-") as temp_root:
+        temp = Path(temp_root)
+        real_dir = temp / "real"
+        real_dir.mkdir()
+        symlink_dir = temp / "link"
+        os.symlink(real_dir, symlink_dir)
+        expect_workspace_rejection(str(symlink_dir), None, "symlink directory")
+        inaccessible = temp / "inaccessible"
+        inaccessible.mkdir()
+        inaccessible.chmod(0)
+        try:
+            if not nddev_qwen_code.user_access(inaccessible, os.R_OK | os.X_OK):
+                expect_workspace_rejection(str(inaccessible), None, "inaccessible directory")
+        finally:
+            inaccessible.chmod(0o700)
+    for argv, expected in (
+        (["--include-directories=/tmp/project"], "--include-directories"),
+        (["--add-dir", "/tmp/project"], "--add-dir"),
+        (["--includeDirectories=/tmp/project"], "--includeDirectories"),
+        (["--addDir", "/tmp/project"], "--addDir"),
+        (["--worktree=feature"], "--worktree"),
+        (["serve", "--workspace=/tmp/project"], "--workspace"),
+        (["channel", "pairing", "list", "bot", "--cwd=/tmp/project"], "--cwd"),
+        (["-mtest-model"], "-m"),
+        (["-eextension"], "-e"),
+        (["-r123"], "-r"),
+        (["-phello"], "-p"),
+        (["-ihello"], "-i"),
+        (["-ojson"], "-o"),
+    ):
+        require(
+            nddev_qwen_code.first_qwen_scope_override(list(argv)) == expected,
+            f"launch scope override detection mismatch for {argv!r}",
+            errors,
+        )
+    for setup_id, expected_profile in (("safe", "safe"), ("full-auto", "full-auto")):
+        try:
+            parsed = nddev_qwen_code.parse_args(
+                ["install", "--setup", setup_id, "--target", "/tmp/qwen"]
+            )
+            setup, profile = nddev_qwen_code.resolve_setup_profile(parsed.setup, parsed.profile)
+        except (SystemExit, Exception) as exc:  # noqa: BLE001 - report validator context.
+            errors.append(f"legacy setup {setup_id} did not resolve cleanly: {exc}")
+            continue
+        require(setup == "nddev-builder", f"legacy setup {setup_id} setup mismatch", errors)
+        require(
+            profile == expected_profile,
+            f"legacy setup {setup_id} profile mismatch",
+            errors,
+        )
+    for argv in (
+        ["install", "--setup", "safe", "--profile", "full-auto", "--target", "/tmp/qwen"],
+        ["install", "--setup", "balanced", "--target", "/tmp/qwen"],
+    ):
+        try:
+            parsed = nddev_qwen_code.parse_args(argv)
+            nddev_qwen_code.resolve_setup_profile(parsed.setup, parsed.profile)
+        except nddev_qwen_code.QwenCodeSetupError:
+            continue
+        except SystemExit as exc:
+            errors.append(f"parse_args unexpectedly rejected {argv!r}: {exc.code}")
+            continue
+        errors.append(f"legacy setup compatibility accepted invalid argv {argv!r}")
 
 
 def validate_public_tree(errors: list[str]) -> None:
