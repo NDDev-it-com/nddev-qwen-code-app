@@ -14,6 +14,7 @@
     "binary": "qwen",
     "node_requires": ">=22.0.0",
     "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+    "tarball_size_bytes": 23836955,
     "integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
     "shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
     "git_head": "41b4ee8373fb4aa324925e69e0515ca72959ec5b"
@@ -35,11 +36,10 @@
     "@teddyzhu/clipboard-win32-x64-msvc": "0.0.5",
     "sharp": "0.34.5"
   },
-  "standalone_installer": {
+  "mutable_installer_observation": {
     "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-    "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-    "argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
-    "archive_verification": "official SHA256SUMS"
+    "trusted_for_install": false,
+    "reason": "mutable installer script; manager uses pinned release archive and npm package provenance instead"
   },
   "release_assets": {
     "cli.js": {

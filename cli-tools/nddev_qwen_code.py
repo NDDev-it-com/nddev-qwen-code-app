@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import errno
 import fcntl
 import hashlib
+import io
 import json
 import os
 import platform
@@ -16,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import urllib.error
@@ -23,7 +26,7 @@ import urllib.request
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,19 +53,36 @@ PROCESS_TIMEOUT_SECONDS = 120
 TESTED_QWEN_CODE_VERSION = "0.21.1"
 QWEN_CODE_PACKAGE = "@qwen-code/qwen-code"
 QWEN_COMMAND = "qwen"
-INSTALLER_URL = (
-    "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh"
-)
-INSTALLER_SHA256 = "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638"
-INSTALLER_ARGV = (
-    "--method",
-    "standalone",
-    "--version",
-    TESTED_QWEN_CODE_VERSION,
-    "--no-modify-path",
-)
+QWEN_NPM_TARBALL_URL = "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz"
+QWEN_NPM_TARBALL_SIZE_BYTES = 23836955
+QWEN_NPM_INTEGRITY = "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw=="
+QWEN_NPM_SHASUM = "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d"
+QWEN_RELEASE_BASE_URL = "https://github.com/QwenLM/qwen-code/releases/download/v0.21.1"
+QWEN_RELEASE_ARCHIVES: dict[str, dict[str, Any]] = {
+    "darwin-arm64": {
+        "asset": "qwen-code-darwin-arm64.tar.gz",
+        "size_bytes": 75117454,
+        "sha256": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6",
+    },
+    "darwin-x64": {
+        "asset": "qwen-code-darwin-x64.tar.gz",
+        "size_bytes": 76413403,
+        "sha256": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e",
+    },
+    "linux-arm64": {
+        "asset": "qwen-code-linux-arm64.tar.gz",
+        "size_bytes": 82000362,
+        "sha256": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454",
+    },
+    "linux-x64": {
+        "asset": "qwen-code-linux-x64.tar.gz",
+        "size_bytes": 82210013,
+        "sha256": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c",
+    },
+}
 CONTROLLED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-INSTALLER_MAX_BYTES = 1024 * 1024
+NPM_TARBALL_MAX_BYTES = 64 * 1024 * 1024
+RELEASE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024
 SOFTWARE_TREE_MAX_BYTES = 1024 * 1024 * 1024
 SOFTWARE_TREE_MAX_PATHS = 100000
 CONTROL_ROOT_RELATIVE = Path(".nddev") / "qwen-code"
@@ -1510,7 +1530,9 @@ def current_cleanup_paths(root: Path) -> set[str]:
     return result
 
 
-def validate_cleanup_object(path: Path, record: dict[str, Any], *, deleting_directory: bool) -> None:
+def validate_cleanup_object(
+    path: Path, record: dict[str, Any], *, deleting_directory: bool
+) -> None:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1551,6 +1573,7 @@ def drain_tombstone_entry(tombstone: Path, entry: dict[str, Any]) -> None:
     unknown = sorted(present - declared)
     if unknown:
         fail(f"cleanup tombstone contains unknown entries: {', '.join(unknown)}")
+
     def cleanup_depth(value: str) -> int:
         return 0 if value == "." else len(Path(value).parts)
 
@@ -1884,7 +1907,10 @@ def replace_managed_state(
     postcondition: Any | None = None,
 ) -> bool:
     assert_snapshot(target, expected)
-    hold = target.parent / f".{target.name}.nddev-qwen-code-managed-hold.{os.getpid()}.{uuid.uuid4().hex}"
+    hold = (
+        target.parent
+        / f".{target.name}.nddev-qwen-code-managed-hold.{os.getpid()}.{uuid.uuid4().hex}"
+    )
     moved: list[str] = []
     changing: list[str] = []
     try:
@@ -2012,7 +2038,11 @@ def create_backup(
             staging.rename(destination)
             fsync_directory(pool)
         except BaseException:
-            if destination_moved and path_exists_no_follow(replaced) and not path_exists_no_follow(destination):
+            if (
+                destination_moved
+                and path_exists_no_follow(replaced)
+                and not path_exists_no_follow(destination)
+            ):
                 replaced.rename(destination)
                 fsync_directory(pool)
             raise
@@ -2361,31 +2391,6 @@ def safe_child_base_environment(*, include_path: bool) -> dict[str, str]:
     return env
 
 
-def install_stage_environment(stage_root: Path, live_stage: Path) -> dict[str, str]:
-    home = create_or_require_private_child_directory(stage_root, Path("home"))
-    tmp = create_or_require_private_child_directory(stage_root, Path("tmp"))
-    xdg_config = create_or_require_private_child_directory(stage_root, Path("xdg-config"))
-    xdg_cache = create_or_require_private_child_directory(stage_root, Path("xdg-cache"))
-    xdg_state = create_or_require_private_child_directory(stage_root, Path("xdg-state"))
-    qwen_home = create_or_require_private_child_directory(stage_root, Path("qwen-home"))
-    qwen_runtime = create_or_require_private_child_directory(stage_root, Path("qwen-runtime"))
-    env = safe_child_base_environment(include_path=True)
-    env.update(
-        {
-            "HOME": str(home),
-            "USERPROFILE": str(home),
-            "TMPDIR": str(tmp),
-            "XDG_CONFIG_HOME": str(xdg_config),
-            "XDG_CACHE_HOME": str(xdg_cache),
-            "XDG_STATE_HOME": str(xdg_state),
-            "QWEN_HOME": str(qwen_home),
-            "QWEN_RUNTIME_DIR": str(qwen_runtime),
-            "QWEN_INSTALL_ROOT": str(live_stage),
-        }
-    )
-    return env
-
-
 def launch_environment(target: Path) -> dict[str, str]:
     runtime = create_or_require_private_child_directory(target, Path("runtime"))
     tmp = create_or_require_private_child_directory(target, Path("runtime") / "tmp")
@@ -2406,6 +2411,16 @@ def launch_environment(target: Path) -> dict[str, str]:
         }
     )
     return env
+
+
+def sri_sha512_bytes(integrity: str) -> bytes:
+    algorithm, separator, encoded = integrity.partition("-")
+    if algorithm != "sha512" or separator != "-":
+        fail("npm package integrity must use sha512 SRI")
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        fail(f"npm package integrity is not valid base64: {exc}")
 
 
 def download_bytes(url: str, *, max_bytes: int) -> bytes:
@@ -2439,42 +2454,198 @@ def download_bytes(url: str, *, max_bytes: int) -> bytes:
                     f"expected {expected_length} from Content-Length"
                 )
     except (urllib.error.URLError, TimeoutError) as exc:
-        fail(f"failed to download official Qwen Code installer: {exc}")
+        fail(f"failed to download official Qwen Code artifact: {exc}")
     return b"".join(chunks)
 
 
-def download_official_installer(stage_root: Path) -> Path:
-    content = download_bytes(INSTALLER_URL, max_bytes=INSTALLER_MAX_BYTES)
-    digest = sha256_bytes(content)
-    if digest != INSTALLER_SHA256:
-        fail("official Qwen Code installer SHA-256 mismatch")
-    installer = stage_root / "install-qwen-standalone.sh"
-    durable_write_file(installer, content, 0o700)
-    return installer
+def download_verified_bytes(
+    url: str,
+    *,
+    expected_size: int,
+    max_bytes: int,
+    sha256: str | None = None,
+    sha1: str | None = None,
+    sri_sha512: str | None = None,
+    label: str,
+) -> bytes:
+    content = download_bytes(url, max_bytes=max_bytes)
+    if len(content) != expected_size:
+        fail(f"{label} size mismatch: expected {expected_size}, got {len(content)}")
+    if sha256 is not None and sha256_bytes(content) != sha256:
+        fail(f"{label} SHA-256 mismatch")
+    if sha1 is not None and hashlib.sha1(content).hexdigest() != sha1:
+        fail(f"{label} SHA-1 mismatch")
+    if sri_sha512 is not None:
+        expected = sri_sha512_bytes(sri_sha512)
+        actual = hashlib.sha512(content).digest()
+        if actual != expected:
+            fail(f"{label} SRI sha512 mismatch")
+    return content
 
 
-def observed_qwen_version(executable: Path, target: Path) -> str:
-    require_safe_executable(executable, target, "staged Qwen Code executable")
-    completed = bounded_process(
-        [str(executable), "--version"],
-        cwd=target,
-        env=launch_environment(target),
-        timeout=20,
+def verify_npm_package_provenance() -> dict[str, Any]:
+    content = download_verified_bytes(
+        QWEN_NPM_TARBALL_URL,
+        expected_size=QWEN_NPM_TARBALL_SIZE_BYTES,
+        max_bytes=NPM_TARBALL_MAX_BYTES,
+        sha1=QWEN_NPM_SHASUM,
+        sri_sha512=QWEN_NPM_INTEGRITY,
+        label="official npm Qwen Code package",
     )
-    if completed.returncode != 0:
-        fail(f"Qwen Code version smoke failed with exit {completed.returncode}")
-    text = "\n".join((completed.stdout, completed.stderr)).strip()
-    match = re.search(r"(?<![0-9])([0-9]+\.[0-9]+\.[0-9]+)(?![0-9])", text)
-    if match is None or SEMVER_PATTERN.fullmatch(match.group(1)) is None:
-        fail(f"Qwen Code returned an invalid version string: {text!r}")
-    return match.group(1)
+    try:
+        with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+            package_member = archive.getmember("package/package.json")
+            entrypoint_member = archive.getmember("package/cli-entry.js")
+            package_stream = archive.extractfile(package_member)
+            if package_stream is None:
+                fail("npm package metadata is missing")
+            package = parse_json_object(package_stream.read(METADATA_MAX_BYTES + 1), "npm package")
+    except (KeyError, tarfile.TarError, OSError) as exc:
+        fail(f"official npm package layout is invalid: {exc}")
+    require_exact_keys(
+        {
+            "name": package.get("name"),
+            "version": package.get("version"),
+            "bin": package.get("bin"),
+            "engines": package.get("engines"),
+        },
+        {"name", "version", "bin", "engines"},
+        "npm package selected metadata",
+    )
+    if package["name"] != QWEN_CODE_PACKAGE:
+        fail("npm package identity mismatch")
+    if package["version"] != TESTED_QWEN_CODE_VERSION:
+        fail("npm package version mismatch")
+    if package["bin"] != {QWEN_COMMAND: "cli-entry.js"}:
+        fail("npm package bin mapping mismatch")
+    if not isinstance(package["engines"], dict) or package["engines"].get("node") != ">=22.0.0":
+        fail("npm package Node engine mismatch")
+    if not entrypoint_member.isfile() or entrypoint_member.size <= 0:
+        fail("npm package CLI entrypoint is invalid")
+    return {
+        "tarball": QWEN_NPM_TARBALL_URL,
+        "size_bytes": QWEN_NPM_TARBALL_SIZE_BYTES,
+        "integrity": QWEN_NPM_INTEGRITY,
+        "shasum": QWEN_NPM_SHASUM,
+        "node_requires": package["engines"]["node"],
+        "bin": package["bin"],
+    }
+
+
+def release_archive_metadata_for_host() -> tuple[str, dict[str, Any]]:
+    model = preflight_supported_host()
+    vendor_key = f"{model.vendor_os}-{model.vendor_arch}"
+    metadata = QWEN_RELEASE_ARCHIVES.get(vendor_key)
+    if metadata is None:
+        fail(f"unsupported Qwen Code release archive platform: {vendor_key}")
+    return vendor_key, metadata
+
+
+def fsync_tree_directories(root: Path) -> None:
+    directories = [root]
+    directories.extend(path for path in root.rglob("*") if path.is_dir() and not path.is_symlink())
+    for directory in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+        fsync_directory(directory)
+
+
+def safe_extract_release_archive(content: bytes, destination: Path) -> None:
+    if path_exists_no_follow(destination):
+        fail("Qwen Code archive install destination already exists")
+    missing: list[Path] = []
+    cursor = destination
+    while not path_exists_no_follow(cursor):
+        missing.append(cursor)
+        cursor = cursor.parent
+    require_directory(cursor, "Qwen Code archive destination ancestor")
+    for directory in reversed(missing):
+        directory.mkdir(mode=OWNER_DIRECTORY_MODE)
+        directory.chmod(OWNER_DIRECTORY_MODE)
+        fsync_directory(directory.parent)
+    path_count = 0
+    byte_count = 0
+    try:
+        with tarfile.open(fileobj=io.BytesIO(content), mode="r:gz") as archive:
+            members = archive.getmembers()
+            for member in members:
+                name = PurePosixPath(member.name)
+                if name.is_absolute() or ".." in name.parts or not name.parts:
+                    fail(f"Qwen Code archive member escapes install root: {member.name}")
+                if name.parts[0] != "qwen-code":
+                    fail(f"Qwen Code archive member has unexpected root: {member.name}")
+                if len(name.parts) == 1:
+                    continue
+                relative = Path(*name.parts[1:])
+                target = destination / relative
+                path_count += 1
+                if path_count > SOFTWARE_TREE_MAX_PATHS:
+                    fail("Qwen Code archive exceeds software path bound")
+                if member.isdir():
+                    create_or_require_private_child_directory(destination, relative)
+                    continue
+                if not member.isfile():
+                    fail(f"Qwen Code archive member has unsupported type: {member.name}")
+                byte_count += member.size
+                if byte_count > SOFTWARE_TREE_MAX_BYTES:
+                    fail("Qwen Code archive exceeds software byte bound")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    fail(f"Qwen Code archive file cannot be read: {member.name}")
+                data = stream.read()
+                if len(data) != member.size:
+                    fail(f"Qwen Code archive member size mismatch: {member.name}")
+                mode = 0o700 if member.mode & 0o111 else OWNER_FILE_MODE
+                create_or_require_private_child_directory(destination, relative.parent)
+                durable_write_file(target, data, mode)
+    except tarfile.TarError as exc:
+        fail(f"official Qwen Code release archive is invalid: {exc}")
+    fsync_tree_directories(destination)
+
+
+def materialize_official_release_archive(stage_root: Path, live_stage: Path) -> dict[str, Any]:
+    del stage_root
+    npm_provenance = verify_npm_package_provenance()
+    vendor_key, metadata = release_archive_metadata_for_host()
+    asset = metadata["asset"]
+    archive_url = f"{QWEN_RELEASE_BASE_URL}/{asset}"
+    content = download_verified_bytes(
+        archive_url,
+        expected_size=metadata["size_bytes"],
+        max_bytes=RELEASE_ARCHIVE_MAX_BYTES,
+        sha256=metadata["sha256"],
+        label=f"official Qwen Code release archive {asset}",
+    )
+    install_root = live_stage / SOFTWARE_DIR_RELATIVE
+    safe_extract_release_archive(content, install_root)
+    chmod_private_tree(live_stage)
+    write_target_relative_qwen_launcher(live_stage)
+    metadata_json = package_metadata(live_stage)
+    if metadata_json["version"] != TESTED_QWEN_CODE_VERSION:
+        fail("release archive package version mismatch")
+    require_safe_executable(
+        live_stage / SOFTWARE_DIR_RELATIVE / "bin" / QWEN_COMMAND,
+        live_stage,
+        "Qwen Code release archive entrypoint",
+    )
+    for relative in (
+        SOFTWARE_DIR_RELATIVE / "lib" / "cli-entry.js",
+        SOFTWARE_DIR_RELATIVE / "manifest.json",
+    ):
+        require_regular_file(live_stage / relative, f"Qwen Code release archive {relative}")
+    return {
+        "vendor_platform": vendor_key,
+        "asset": asset,
+        "url": archive_url,
+        "size_bytes": metadata["size_bytes"],
+        "sha256": metadata["sha256"],
+        "npm": npm_provenance,
+    }
 
 
 def write_target_relative_qwen_launcher(root: Path) -> None:
     launcher = root / "bin" / QWEN_COMMAND
     package_entrypoint = root / SOFTWARE_DIR_RELATIVE / "bin" / QWEN_COMMAND
-    require_safe_executable(launcher, root, "official Qwen Code launcher")
     require_safe_executable(package_entrypoint, root, "Qwen Code package entrypoint")
+    create_or_require_private_child_directory(root, Path("bin"))
     fd, temporary = tempfile.mkstemp(
         prefix=f".{QWEN_COMMAND}.",
         suffix=".tmp",
@@ -2744,15 +2915,21 @@ def compute_software_tree_digest(root: Path) -> dict[str, Any]:
 
 
 def software_manifest_identity() -> dict[str, Any]:
+    vendor_key, metadata = release_archive_metadata_for_host()
     return {
         "schema_version": 1,
         "product_name": PRODUCT_NAME,
         "package": QWEN_CODE_PACKAGE,
-        "install_method": "official-standalone",
-        "installer_url": INSTALLER_URL,
-        "installer_sha256": INSTALLER_SHA256,
-        "installer_argv": list(INSTALLER_ARGV),
-        "archive_verification": "official SHA256SUMS",
+        "install_method": "official-release-archive",
+        "release_archive_platform": vendor_key,
+        "release_archive_asset": metadata["asset"],
+        "release_archive_url": f"{QWEN_RELEASE_BASE_URL}/{metadata['asset']}",
+        "release_archive_size_bytes": metadata["size_bytes"],
+        "release_archive_sha256": metadata["sha256"],
+        "npm_tarball": QWEN_NPM_TARBALL_URL,
+        "npm_tarball_size_bytes": QWEN_NPM_TARBALL_SIZE_BYTES,
+        "npm_integrity": QWEN_NPM_INTEGRITY,
+        "npm_shasum": QWEN_NPM_SHASUM,
         "executable": f"bin/{QWEN_COMMAND}",
         "entrypoint_resolution": "target-relative-wrapper",
         "install_root": str(SOFTWARE_DIR_RELATIVE),
@@ -2877,32 +3054,6 @@ def require_current_software(target: Path) -> dict[str, Any]:
             f"run update-cli to install {TESTED_QWEN_CODE_VERSION}{detail}"
         )
     return status
-
-
-def bounded_process(
-    command: list[str], *, cwd: Path, env: dict[str, str], timeout: int
-) -> subprocess.CompletedProcess[str]:
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=cwd,
-            env=env,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=timeout,
-        )
-    except FileNotFoundError:
-        fail(f"process executable not found: {command[0]}")
-    except subprocess.TimeoutExpired:
-        fail(f"process timed out after {timeout} seconds: {command[0]}")
-    if (
-        len(completed.stdout) > PROCESS_OUTPUT_MAX_BYTES
-        or len(completed.stderr) > PROCESS_OUTPUT_MAX_BYTES
-    ):
-        fail(f"process output exceeded {PROCESS_OUTPUT_MAX_BYTES}-byte limit: {command[0]}")
-    return completed
 
 
 def validate_software_parent_destination(target: Path, relative: Path) -> None:
@@ -3084,7 +3235,7 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
         )
         expected = build_software_manifest(target)
         if manifest != expected or manifest.get("version") != TESTED_QWEN_CODE_VERSION:
-            fail("installed Qwen Code CLI did not validate as the tested standalone version")
+            fail("installed Qwen Code CLI did not validate as the tested release archive version")
         committed = True
     except BaseException:
         moved_old = [
@@ -3105,27 +3256,6 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
         root = require_control_root(create=True)
         return retire_path_after_commit(root, target, hold, "software-replace")
     return False
-
-
-def run_official_standalone_installer(stage_root: Path, live_stage: Path) -> None:
-    installer = download_official_installer(stage_root)
-    env = install_stage_environment(stage_root, live_stage)
-    completed = bounded_process(
-        ["/bin/bash", str(installer), *INSTALLER_ARGV],
-        cwd=stage_root,
-        env=env,
-        timeout=PROCESS_TIMEOUT_SECONDS,
-    )
-    if completed.returncode != 0:
-        fail(
-            "official Qwen Code standalone installer failed with exit "
-            f"{completed.returncode}: {completed.stderr.strip()}"
-        )
-    chmod_private_tree(live_stage)
-    write_target_relative_qwen_launcher(live_stage)
-    observed = observed_qwen_version(live_stage / "bin" / QWEN_COMMAND, live_stage)
-    if observed != TESTED_QWEN_CODE_VERSION:
-        fail(f"installer produced Qwen Code {observed}, expected {TESTED_QWEN_CODE_VERSION}")
 
 
 def write_stage_software_manifest(live_stage: Path) -> None:
@@ -3197,7 +3327,7 @@ def install_or_update_cli(target: Path, command: str) -> dict[str, Any]:
             staging.chmod(OWNER_DIRECTORY_MODE)
             live_stage = staging / "live"
             live_stage.mkdir(mode=OWNER_DIRECTORY_MODE)
-            run_official_standalone_installer(staging, live_stage)
+            materialize_official_release_archive(staging, live_stage)
             chmod_private_tree(live_stage)
             write_stage_software_manifest(live_stage)
             cleanup_pending = replace_software_state(target, live_stage, staging)
@@ -3339,11 +3469,7 @@ def prepare_launch_image(target: Path, executable: Path) -> LaunchImage:
     image_root.mkdir(mode=OWNER_DIRECTORY_MODE)
     fsync_directory(launch_parent)
     handoff = image_root / QWEN_COMMAND
-    script = (
-        "#!/bin/sh\n"
-        "set -eu\n"
-        f"exec {sh_single_quote(str(executable))} \"$@\"\n"
-    ).encode("utf-8")
+    script = (f'#!/bin/sh\nset -eu\nexec {sh_single_quote(str(executable))} "$@"\n').encode("utf-8")
     durable_write_file(handoff, script, 0o500)
     image_root.chmod(0o500)
     fsync_directory(launch_parent)
@@ -3550,8 +3676,8 @@ def build_parser() -> argparse.ArgumentParser:
     for command, help_text in (
         ("builder-status", "Inspect the native nddev-builder Qwen extension."),
         ("software-status", "Inspect target-owned Qwen Code CLI software."),
-        ("install-cli", "Install the pinned official Qwen Code standalone build."),
-        ("update-cli", "Update target-owned Qwen Code to the pinned standalone build."),
+        ("install-cli", "Install the pinned official Qwen Code release archive."),
+        ("update-cli", "Update target-owned Qwen Code to the pinned release archive."),
         ("remove-cli", "Remove target-owned Qwen Code CLI software."),
     ):
         command_parser = subparsers.add_parser(command, help=help_text)

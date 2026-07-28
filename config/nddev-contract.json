@@ -61,7 +61,7 @@
     "direct_command": "QWEN_HOME=<absolute-target> QWEN_RUNTIME_DIR=<absolute-target>/runtime <absolute-target>/bin/qwen [args...]",
     "home_environment_variable": "QWEN_HOME",
     "runtime_environment_variable": "QWEN_RUNTIME_DIR",
-    "executable_source": "validated-target-owned-official-standalone-install",
+    "executable_source": "validated-target-owned-official-release-archive",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
@@ -91,18 +91,24 @@
     ],
     "ubuntu_version_floor": null,
     "vendor_platforms": ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"],
-    "installer": {
-      "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-      "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-      "argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
-      "environment": "minimal-allowlist-target-owned-qwen-install-root",
-      "archive_verification": "official SHA256SUMS"
+    "package_provenance": {
+      "name": "@qwen-code/qwen-code",
+      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+      "tarball_size_bytes": 23836955,
+      "integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
+      "shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
+      "scripts_enabled": false
+    },
+    "release_archive": {
+      "base_url": "https://github.com/QwenLM/qwen-code/releases/download/v0.21.1",
+      "verification": "pinned-size-sha256",
+      "materialization": "manager-owned-safe-extract-no-scripts"
     },
     "preconditions": {
       "install": "absent target-owned Qwen Code software surface",
       "update": "installed or safe partial target-owned Qwen Code software surface",
       "partial_state_policy": "install rejects any replace path or owned software parent; update may repair safe partial state",
-      "preflight": "existing replace paths and software parent directories are validated before installer download"
+      "preflight": "existing replace paths and software parent directories are validated before archive download"
     },
     "bounds": {
       "max_tree_paths": 100000,

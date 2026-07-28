@@ -36,12 +36,11 @@ EXPECTED_QWEN = {
     "release_published_at": "2026-07-28T17:52:26Z",
     "package": "@qwen-code/qwen-code",
     "npm_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+    "npm_tarball_size_bytes": 23836955,
     "npm_integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
     "npm_shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
-    "installer_url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-    "installer_sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-    "installer_argv": ["--method", "standalone", "--version", "0.21.1", "--no-modify-path"],
-    "archive_verification": "official SHA256SUMS",
+    "release_base_url": "https://github.com/QwenLM/qwen-code/releases/download/v0.21.1",
+    "archive_verification": "pinned-size-sha256",
     "node_requires": ">=22.0.0",
 }
 EXPECTED_ARCHIVES = {
@@ -138,23 +137,24 @@ def validate_versions(errors: list[str]) -> None:
         errors,
     )
     require(
+        build.get("qwen_code_npm_tarball_size_bytes") == EXPECTED_QWEN["npm_tarball_size_bytes"],
+        "npm tarball size mismatch",
+        errors,
+    )
+    require(
         build.get("qwen_code_npm_shasum") == EXPECTED_QWEN["npm_shasum"],
         "npm shasum mismatch",
         errors,
     )
     require(
-        build.get("standalone_installer_url") == nddev_qwen_code.INSTALLER_URL,
-        "standalone installer URL mismatch",
+        build.get("qwen_code_release_base_url") == nddev_qwen_code.QWEN_RELEASE_BASE_URL,
+        "release archive base URL mismatch",
         errors,
     )
     require(
-        build.get("standalone_installer_sha256") == nddev_qwen_code.INSTALLER_SHA256,
-        "standalone installer SHA-256 mismatch",
-        errors,
-    )
-    require(
-        build.get("standalone_archive_verification") == EXPECTED_QWEN["archive_verification"],
-        "standalone archive verification mismatch",
+        build.get("qwen_code_release_archive_verification")
+        == EXPECTED_QWEN["archive_verification"],
+        "release archive verification mismatch",
         errors,
     )
     require(
@@ -229,31 +229,25 @@ def validate_versions(errors: list[str]) -> None:
             errors,
         )
         require(
+            package.get("tarball_size_bytes") == build.get("qwen_code_npm_tarball_size_bytes"),
+            "baseline npm tarball size mismatch",
+            errors,
+        )
+        require(
             package.get("shasum") == build.get("qwen_code_npm_shasum"),
             "baseline npm shasum mismatch",
             errors,
         )
-    installer = baseline.get("standalone_installer")
-    require(isinstance(installer, dict), "baseline standalone_installer block missing", errors)
-    if isinstance(installer, dict):
+    installer_observation = baseline.get("mutable_installer_observation")
+    require(
+        isinstance(installer_observation, dict),
+        "baseline mutable installer observation block missing",
+        errors,
+    )
+    if isinstance(installer_observation, dict):
         require(
-            installer.get("url") == nddev_qwen_code.INSTALLER_URL,
-            "baseline installer URL mismatch",
-            errors,
-        )
-        require(
-            installer.get("sha256") == nddev_qwen_code.INSTALLER_SHA256,
-            "baseline installer SHA-256 mismatch",
-            errors,
-        )
-        require(
-            installer.get("argv") == list(nddev_qwen_code.INSTALLER_ARGV),
-            "baseline installer argv mismatch",
-            errors,
-        )
-        require(
-            installer.get("archive_verification") == EXPECTED_QWEN["archive_verification"],
-            "baseline archive verification mismatch",
+            installer_observation.get("trusted_for_install") is False,
+            "mutable installer must not be trusted for install",
             errors,
         )
     require(
@@ -279,6 +273,19 @@ def validate_versions(errors: list[str]) -> None:
                     f"release asset {asset_name} size missing",
                     errors,
                 )
+        require(
+            nddev_qwen_code.QWEN_RELEASE_ARCHIVES
+            == {
+                archive: {
+                    "asset": f"qwen-code-{archive}.tar.gz",
+                    "size_bytes": release_assets[f"qwen-code-{archive}.tar.gz"]["size_bytes"],
+                    "sha256": digest,
+                }
+                for archive, digest in EXPECTED_ARCHIVES.items()
+            },
+            "manager release archive catalog mismatch",
+            errors,
+        )
     product_hosts = baseline.get("product_hosts")
     require(isinstance(product_hosts, dict), "baseline product_hosts block missing", errors)
     if isinstance(product_hosts, dict):
@@ -383,8 +390,7 @@ def validate_runtime_and_software(errors: list[str]) -> None:
         if not isinstance(surface, dict):
             continue
         require(
-            surface.get("executable_source")
-            == "validated-target-owned-official-standalone-install",
+            surface.get("executable_source") == "validated-target-owned-official-release-archive",
             f"{owner} executable source mismatch",
             errors,
         )
@@ -406,27 +412,59 @@ def validate_runtime_and_software(errors: list[str]) -> None:
         require(isinstance(surface, dict), f"{owner} software_install missing", errors)
         if not isinstance(surface, dict):
             continue
-        installer = surface.get("installer")
-        require(isinstance(installer, dict), f"{owner} installer block missing", errors)
-        if isinstance(installer, dict):
+        package_provenance = surface.get("package_provenance")
+        require(
+            isinstance(package_provenance, dict),
+            f"{owner} package_provenance block missing",
+            errors,
+        )
+        if isinstance(package_provenance, dict):
             require(
-                installer.get("url") == nddev_qwen_code.INSTALLER_URL,
-                f"{owner} installer URL mismatch",
+                package_provenance.get("tarball") == nddev_qwen_code.QWEN_NPM_TARBALL_URL,
+                f"{owner} npm tarball mismatch",
                 errors,
             )
             require(
-                installer.get("sha256") == nddev_qwen_code.INSTALLER_SHA256,
-                f"{owner} installer SHA-256 mismatch",
+                package_provenance.get("tarball_size_bytes")
+                == nddev_qwen_code.QWEN_NPM_TARBALL_SIZE_BYTES,
+                f"{owner} npm tarball size mismatch",
                 errors,
             )
             require(
-                installer.get("argv") == list(nddev_qwen_code.INSTALLER_ARGV),
-                f"{owner} installer argv mismatch",
+                package_provenance.get("integrity") == nddev_qwen_code.QWEN_NPM_INTEGRITY,
+                f"{owner} npm integrity mismatch",
                 errors,
             )
             require(
-                installer.get("archive_verification") == "official SHA256SUMS",
-                f"{owner} archive verification mismatch",
+                package_provenance.get("shasum") == nddev_qwen_code.QWEN_NPM_SHASUM,
+                f"{owner} npm shasum mismatch",
+                errors,
+            )
+            require(
+                package_provenance.get("scripts_enabled") is False,
+                f"{owner} install scripts must be disabled",
+                errors,
+            )
+        release_archive = surface.get("release_archive")
+        require(
+            isinstance(release_archive, dict),
+            f"{owner} release_archive block missing",
+            errors,
+        )
+        if isinstance(release_archive, dict):
+            require(
+                release_archive.get("base_url") == nddev_qwen_code.QWEN_RELEASE_BASE_URL,
+                f"{owner} release archive base URL mismatch",
+                errors,
+            )
+            require(
+                release_archive.get("verification") == EXPECTED_QWEN["archive_verification"],
+                f"{owner} release archive verification mismatch",
+                errors,
+            )
+            require(
+                release_archive.get("materialization") == "manager-owned-safe-extract-no-scripts",
+                f"{owner} release archive materialization mismatch",
                 errors,
             )
         require(

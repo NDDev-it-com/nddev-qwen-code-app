@@ -91,18 +91,16 @@ python3 cli-tools/nddev_qwen_code.py launch \
   --target /absolute/path/to/qwen-home -- --version
 ```
 
-`install-cli` downloads the pinned official standalone installer, verifies its
-SHA-256, and invokes it with `--method standalone --version 0.21.1
---no-modify-path` inside a same-parent staging directory with isolated
-`QWEN_INSTALL_ROOT`, `HOME`, XDG directories, temp directories, and a controlled
-system `PATH`. The installer performs the official `SHA256SUMS` archive
-verification. The manager then writes a
-deterministic software manifest and atomically swaps only target-owned
+`install-cli` downloads the pinned official release archive for the supported
+host and verifies its size and SHA-256 before extraction. It also verifies the
+matching npm package tarball size, SRI, and SHA-1 provenance with scripts
+disabled. The mutable standalone installer is not executed. The manager then
+writes a deterministic software manifest and atomically swaps only target-owned
 `bin/qwen`, `lib/qwen-code`, and `software/qwen-code.json`.
 
 `install-cli` only accepts an absent software surface. Existing or safe partial
 software state must use `update-cli`; unsafe existing paths fail before the
-installer is downloaded. `software-status` validates the manifest and bounded
+archive is downloaded. `software-status` validates the manifest and bounded
 tree digest without executing `bin/qwen`. Launch never resolves `qwen` from
 ambient `PATH`; it executes `<target>/bin/qwen` with target-owned
 `QWEN_HOME`, `QWEN_RUNTIME_DIR`, `HOME`, `USERPROFILE`, XDG, and temp
