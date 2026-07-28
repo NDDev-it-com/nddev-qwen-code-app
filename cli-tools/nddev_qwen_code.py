@@ -284,6 +284,12 @@ class HostModel:
     unsupported_category: str | None = None
 
 
+@dataclass(frozen=True)
+class ColdNamespaceSnapshot:
+    state: str
+    root_identity: tuple[Any, ...] | None = None
+
+
 def fail(message: str) -> NoReturn:
     raise QwenCodeSetupError(message)
 
@@ -519,18 +525,40 @@ def cleanup_root_path(root: Path, target: Path) -> Path:
     return root / CLEANUP_DIRECTORY_NAME / target_digest(target)
 
 
-def validate_cold_read_namespace(root: Path | None) -> None:
+def namespace_identity(info: os.stat_result) -> tuple[Any, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        owner_of(info),
+        stat.S_IMODE(info.st_mode),
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+    )
+
+
+def cold_read_namespace_snapshot(root: Path | None) -> ColdNamespaceSnapshot:
     if root is None or not path_exists_no_follow(root):
-        return
+        return ColdNamespaceSnapshot("absent")
     info = require_directory(root, "Qwen Code control root")
     if not is_owner_private_directory(info):
         fail(f"Qwen Code control root must be a private manager-owned directory: {root}")
     product_anchor = product_anchor_path(root)
     if path_exists_no_follow(product_anchor):
-        return
+        return ColdNamespaceSnapshot("anchored", namespace_identity(info))
     entries = sorted(entry.name for entry in root.iterdir())
     if entries:
-        fail("Qwen Code control namespace is orphaned without a product anchor")
+        fail(
+            "Qwen Code control namespace is not empty without a product anchor: "
+            + ", ".join(entries)
+        )
+    return ColdNamespaceSnapshot("empty", namespace_identity(info))
+
+
+def validate_cold_read_namespace(root: Path | None) -> None:
+    snapshot = cold_read_namespace_snapshot(root)
+    if snapshot.state == "anchored":
+        return
 
 
 def anchor_payload(kind: str, *, target: Path | None = None) -> bytes:
@@ -3572,18 +3600,7 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
         cleanup_launch_image(image)
 
 
-def coordinated_target_read(raw_target: str, callback: Any) -> Any:
-    preflight_supported_host()
-    lexical = validate_lexical_target(raw_target)
-    root = require_control_root(create=False)
-    if root is None or not path_exists_no_follow(product_anchor_path(root)):
-        validate_cold_read_namespace(root)
-        target = canonicalize_target(lexical)
-        result = callback(target)
-        root_after = require_control_root(create=False)
-        if root_after is None or not path_exists_no_follow(product_anchor_path(root_after)):
-            return result
-        root = root_after
+def coordinated_target_read_locked(root: Path, lexical: Path, callback: Any) -> Any:
     product_anchor = product_anchor_path(root)
     target_context: Any = None
     target: Path | None = None
@@ -3607,6 +3624,31 @@ def coordinated_target_read(raw_target: str, callback: Any) -> Any:
         return callback(target)
     finally:
         target_context.__exit__(None, None, None)
+
+
+def coordinated_target_read(raw_target: str, callback: Any) -> Any:
+    preflight_supported_host()
+    lexical = validate_lexical_target(raw_target)
+    for _attempt in range(2):
+        root = require_control_root(create=False)
+        if root is not None and path_exists_no_follow(product_anchor_path(root)):
+            return coordinated_target_read_locked(root, lexical, callback)
+        before = cold_read_namespace_snapshot(root)
+        if before.state == "anchored":
+            if root is None:
+                fail_concurrent("Qwen Code control namespace appeared during cold read")
+            return coordinated_target_read_locked(root, lexical, callback)
+        target = canonicalize_target(lexical)
+        result = callback(target)
+        root_after = require_control_root(create=False)
+        after = cold_read_namespace_snapshot(root_after)
+        if after.state == "anchored":
+            if root_after is None:
+                fail_concurrent("Qwen Code control namespace appeared during cold read")
+            return coordinated_target_read_locked(root_after, lexical, callback)
+        if after == before:
+            return result
+    fail_concurrent("Qwen Code control namespace changed during cold read")
 
 
 def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
