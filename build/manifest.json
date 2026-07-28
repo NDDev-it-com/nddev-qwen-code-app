@@ -78,6 +78,7 @@
     "canonical_target_bound": true,
     "envelope": "NDDEV-QWEN-CODE-BACKUP.json",
     "location": "sibling .<target-name>.nddev-qwen-code-backups",
+    "managed_path_record_schema": "path-size-sha256",
     "slots": 10
   },
   "command_policy": {
@@ -118,7 +119,7 @@
     "preserve_existing_target_mode": true,
     "external_coordination": "fixed sticky-tmp same-UID monotonic product and canonical target anchors",
     "public_control_root_override": false,
-    "cleanup_journal": "dedicated manager-owned control namespace",
+    "cleanup_journal": "dedicated manager-owned control namespace with verified graph drain",
     "launch_handoff": "private non-writable verified handoff image",
     "staging": "same-filesystem temporary paths with durable publication",
     "preserve_unmanaged_files": true,

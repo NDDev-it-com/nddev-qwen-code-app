@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import fcntl
 import hashlib
 import json
@@ -123,6 +124,7 @@ BACKUP_KEYS = {
     "managed_paths",
     "stamp_sha256",
 }
+BACKUP_RECORD_KEYS = {"path", "size", "sha256"}
 SETTINGS_SETUP_KEYS = ("general", "tools", "privacy", "context")
 PRESERVED_SETTINGS_KEYS = (
     "modelProviders",
@@ -1140,6 +1142,29 @@ def validate_digest_map(value: Any, label: str) -> dict[str, str | None]:
     return result
 
 
+def validate_backup_record_map(value: Any, label: str) -> dict[str, dict[str, Any] | None]:
+    if not isinstance(value, dict) or set(value) != set((*MANAGED_FILES, *BUILDER_FILES)):
+        fail(f"{label} must declare exactly managed payload paths")
+    result: dict[str, dict[str, Any] | None] = {}
+    for name in (*MANAGED_FILES, *BUILDER_FILES):
+        record = value[name]
+        if record is None:
+            result[name] = None
+            continue
+        if not isinstance(record, dict):
+            fail(f"{label}.{name} must be null or an exact payload record")
+        require_exact_keys(record, BACKUP_RECORD_KEYS, f"{label}.{name}")
+        if record["path"] != name:
+            fail(f"{label}.{name}.path mismatch")
+        if not isinstance(record["size"], int) or record["size"] < 0:
+            fail(f"{label}.{name}.size must be a non-negative integer")
+        digest = record["sha256"]
+        if not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None:
+            fail(f"{label}.{name}.sha256 must be a lowercase SHA-256 digest")
+        result[name] = record
+    return result
+
+
 def stamp_bytes(target: Path, setup_id: str, rendered: dict[str, bytes]) -> bytes:
     return canonical_json(
         {
@@ -1366,6 +1391,8 @@ def cleanup_tree_record(path: Path, base: Path, counter: dict[str, int]) -> dict
     if stat.S_ISLNK(info.st_mode):
         fail("cleanup tombstone must not contain symlinks")
     if stat.S_ISREG(info.st_mode):
+        if info.st_nlink != 1:
+            fail("cleanup source file must not have hard-link aliases")
         content, reopened = read_regular_file(path, f"cleanup source {relative}", owner_only=False)
         if identity_of(reopened) != identity_of(info):
             fail_concurrent(f"cleanup source changed during snapshot: {path}")
@@ -1437,6 +1464,132 @@ def validate_cleanup_document(value: dict[str, Any], target: Path, label: str) -
             fail(f"{label} entry records are malformed")
         if len(set(record_paths)) != len(record_paths):
             fail(f"{label} entry records contain duplicates")
+        for record in records:
+            validate_cleanup_record_schema(record, f"{label} entry record")
+
+
+def validate_cleanup_record_schema(record: Any, label: str) -> None:
+    if not isinstance(record, dict):
+        fail(f"{label} must be an object")
+    common = {"path", "mode", "uid", "nlink", "dev", "ino", "size", "mtime_ns", "type"}
+    record_type = record.get("type")
+    if record_type == "file":
+        require_exact_keys(record, common | {"sha256"}, label)
+        digest = record["sha256"]
+        if not isinstance(digest, str) or SHA256_PATTERN.fullmatch(digest) is None:
+            fail(f"{label}.sha256 must be a lowercase SHA-256 digest")
+    elif record_type == "directory":
+        require_exact_keys(record, common | {"children"}, label)
+        children = record["children"]
+        if not isinstance(children, list) or any(not isinstance(item, str) for item in children):
+            fail(f"{label}.children must be a string list")
+        if children != sorted(children) or len(children) != len(set(children)):
+            fail(f"{label}.children must be sorted and unique")
+    else:
+        fail(f"{label}.type is invalid")
+    path = record["path"]
+    if path != ".":
+        validate_relative_name(path, f"{label}.path")
+    for key in ("mode", "uid", "nlink", "dev", "ino", "size", "mtime_ns"):
+        if not isinstance(record[key], int) or record[key] < 0:
+            fail(f"{label}.{key} must be a non-negative integer")
+
+
+def cleanup_record_by_path(entry: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    records = entry["records"]
+    return {record["path"]: record for record in records}
+
+
+def current_cleanup_paths(root: Path) -> set[str]:
+    if not path_exists_no_follow(root):
+        return set()
+    result = {"."}
+    if root.is_dir() and not root.is_symlink():
+        for path in root.rglob("*"):
+            result.add(str(path.relative_to(root)))
+    return result
+
+
+def validate_cleanup_object(path: Path, record: dict[str, Any], *, deleting_directory: bool) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(info.st_mode):
+        fail(f"cleanup tombstone object is a symlink: {record['path']}")
+    if identity_of(info) != (record["dev"], record["ino"]):
+        fail(f"cleanup tombstone object identity changed: {record['path']}")
+    if owner_of(info) != record["uid"] or stat.S_IMODE(info.st_mode) != record["mode"]:
+        fail(f"cleanup tombstone object mode or owner changed: {record['path']}")
+    if record["type"] == "file":
+        if not stat.S_ISREG(info.st_mode):
+            fail(f"cleanup tombstone file changed kind: {record['path']}")
+        if info.st_nlink != record["nlink"] or info.st_size != record["size"]:
+            fail(f"cleanup tombstone file metadata changed: {record['path']}")
+        if info.st_mtime_ns != record["mtime_ns"]:
+            fail(f"cleanup tombstone file mtime changed: {record['path']}")
+        content, reopened = read_regular_file(path, f"cleanup tombstone file {record['path']}")
+        if identity_of(reopened) != identity_of(info):
+            fail_concurrent(f"cleanup tombstone file changed while being read: {record['path']}")
+        if sha256_bytes(content) != record["sha256"]:
+            fail(f"cleanup tombstone file digest mismatch: {record['path']}")
+        return
+    if record["type"] != "directory" or not stat.S_ISDIR(info.st_mode):
+        fail(f"cleanup tombstone directory changed kind: {record['path']}")
+    if not deleting_directory and (
+        info.st_nlink != record["nlink"]
+        or info.st_size != record["size"]
+        or info.st_mtime_ns != record["mtime_ns"]
+    ):
+        fail(f"cleanup tombstone directory metadata changed: {record['path']}")
+
+
+def drain_tombstone_entry(tombstone: Path, entry: dict[str, Any]) -> None:
+    records = cleanup_record_by_path(entry)
+    declared = set(records)
+    present = current_cleanup_paths(tombstone)
+    unknown = sorted(present - declared)
+    if unknown:
+        fail(f"cleanup tombstone contains unknown entries: {', '.join(unknown)}")
+    def cleanup_depth(value: str) -> int:
+        return 0 if value == "." else len(Path(value).parts)
+
+    for relative in sorted(declared, key=cleanup_depth, reverse=True):
+        record = records[relative]
+        path = tombstone if relative == "." else tombstone / relative
+        if not path_exists_no_follow(path):
+            continue
+        if record["type"] == "directory":
+            current_children = sorted(child.name for child in path.iterdir())
+            declared_children: set[str] = set()
+            directory_relative = Path(relative)
+            for name in declared:
+                if name == ".":
+                    continue
+                candidate = Path(name)
+                if relative == ".":
+                    if len(candidate.parts) == 1:
+                        declared_children.add(candidate.parts[0])
+                    continue
+                try:
+                    remainder = candidate.relative_to(directory_relative)
+                except ValueError:
+                    continue
+                if len(remainder.parts) == 1:
+                    declared_children.add(remainder.parts[0])
+            if any(child not in declared_children for child in current_children):
+                fail(f"cleanup tombstone directory contains unknown children: {relative}")
+            validate_cleanup_object(path, record, deleting_directory=True)
+            if current_children:
+                continue
+            path.rmdir()
+            fsync_directory(path.parent)
+            continue
+        validate_cleanup_object(path, record, deleting_directory=False)
+        path.unlink()
+        fsync_directory(path.parent)
+    if path_exists_no_follow(tombstone):
+        fail(f"cleanup tombstone did not drain completely: {entry['name']}")
 
 
 def recover_cleanup_publication_alias(path: Path, info: os.stat_result) -> None:
@@ -1570,15 +1723,22 @@ def drain_cleanup(root: Path, target: Path, *, read_only: bool) -> bool:
     for entry in journal["entries"]:
         tombstone = tombstone_root / entry["name"]
         if path_exists_no_follow(tombstone):
-            unlink_tree_bottom_up(tombstone)
+            drain_tombstone_entry(tombstone, entry)
     if any(tombstone_root.iterdir()):
         fail("cleanup tombstone parent did not drain completely")
     with contextlib.suppress(FileNotFoundError):
-        paths["pending"].unlink()
-        fsync_directory(paths["root"])
-    with contextlib.suppress(FileNotFoundError):
         paths["prepare"].unlink()
         fsync_directory(paths["root"])
+    with contextlib.suppress(FileNotFoundError):
+        paths["pending"].unlink()
+        fsync_directory(paths["root"])
+    for directory in (tombstone_root, paths["root"], paths["root"].parent):
+        try:
+            directory.rmdir()
+            fsync_directory(directory.parent)
+        except OSError as exc:
+            if exc.errno not in {errno.ENOENT, errno.ENOTEMPTY}:
+                raise
     return False
 
 
@@ -1617,6 +1777,10 @@ def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) 
             paths["prepare"].unlink()
             fsync_directory(paths["root"])
     except BaseException:
+        if path_exists_no_follow(paths["pending"]) or (
+            path_exists_no_follow(paths["prepare"]) and path_exists_no_follow(tombstone)
+        ):
+            return True
         if path_exists_no_follow(tombstone) and not path_exists_no_follow(path):
             with contextlib.suppress(OSError):
                 tombstone.rename(path)
@@ -1626,7 +1790,7 @@ def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) 
     try:
         drain_cleanup(root, target, read_only=False)
     except BaseException:
-        return True
+        return cleanup_pending_for_target(root, target, read_only=False)
     return cleanup_pending_for_target(root, target, read_only=False)
 
 
@@ -1641,17 +1805,24 @@ def durable_write_file(path: Path, content: bytes, mode: int) -> None:
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     temp_path = Path(temporary)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temp_path.chmod(mode)
+        try:
+            offset = 0
+            while offset < len(content):
+                written = os.write(fd, content[offset:])
+                if written <= 0:
+                    fail(f"short write while writing {path}")
+                offset += written
+            os.fchmod(fd, mode)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         os.replace(temp_path, path)
         path.chmod(mode)
         fsync_directory(path.parent)
     finally:
         if temp_path.exists():
             temp_path.unlink()
+            fsync_directory(temp_path.parent)
 
 
 def prune_empty_managed_dirs(target: Path) -> None:
@@ -1676,33 +1847,92 @@ def assert_snapshot(target: Path, expected: dict[str, FileSnapshot | None]) -> N
             fail_concurrent(f"managed path changed concurrently: {target_path(target, name)}")
 
 
+def move_managed_path(source: Path, destination: Path) -> None:
+    mkdirs_for_file(destination)
+    os.replace(source, destination)
+    fsync_directory(source.parent)
+    fsync_directory(destination.parent)
+
+
+def restore_managed_hold(
+    target: Path,
+    hold: Path,
+    moved: list[str],
+    desired: dict[str, bytes | None],
+    changing: list[str],
+) -> None:
+    for name in reversed(changing):
+        path = target_path(target, name)
+        if desired.get(name) is not None and path_exists_no_follow(path):
+            path.unlink()
+            fsync_directory(path.parent)
+    for name in reversed(moved):
+        saved = hold / name
+        if path_exists_no_follow(saved):
+            move_managed_path(saved, target_path(target, name))
+    if path_exists_no_follow(hold):
+        cleanup_path(hold)
+        fsync_directory(hold.parent)
+
+
 def replace_managed_state(
     target: Path,
     desired: dict[str, bytes | None],
     expected: dict[str, FileSnapshot | None],
-) -> None:
+    *,
+    root: Path,
+    postcondition: Any | None = None,
+) -> bool:
     assert_snapshot(target, expected)
-    for name in MANAGED_PATHS:
-        path = target_path(target, name)
-        content = desired.get(name)
-        if content is None:
+    hold = target.parent / f".{target.name}.nddev-qwen-code-managed-hold.{os.getpid()}.{uuid.uuid4().hex}"
+    moved: list[str] = []
+    changing: list[str] = []
+    try:
+        hold.mkdir(mode=OWNER_DIRECTORY_MODE)
+        hold.chmod(OWNER_DIRECTORY_MODE)
+        fsync_directory(hold.parent)
+        for name in MANAGED_PATHS:
+            path = target_path(target, name)
+            content = desired.get(name)
+            snapshot = expected[name]
+            wanted_digest = sha256_bytes(content) if content is not None else None
+            current_digest = snapshot.digest if snapshot is not None else None
+            if current_digest == wanted_digest:
+                continue
+            changing.append(name)
             if path_exists_no_follow(path):
-                if snapshot_file(path, owner_only=False) != expected[name]:
+                if snapshot_file(path, owner_only=False) != snapshot:
                     fail_concurrent(f"managed path changed concurrently: {path}")
-                path.unlink()
-            continue
-        atomic_write(path, content)
-    prune_empty_managed_dirs(target)
-    for name in MANAGED_PATHS:
-        content = desired.get(name)
-        path = target_path(target, name)
-        if content is None:
-            if path_exists_no_follow(path):
-                fail_concurrent(f"managed path appeared after removal: {path}")
-        else:
-            snapshot = snapshot_file(path, owner_only=True)
-            if snapshot is None or snapshot.digest != sha256_bytes(content):
-                fail_concurrent(f"managed path changed after replacement: {path}")
+                saved = hold / name
+                move_managed_path(path, saved)
+                moved.append(name)
+        for name in changing:
+            content = desired.get(name)
+            if content is None:
+                continue
+            atomic_write(target_path(target, name), content)
+        prune_empty_managed_dirs(target)
+        for name in changing:
+            content = desired.get(name)
+            path = target_path(target, name)
+            if content is None:
+                if path_exists_no_follow(path):
+                    fail_concurrent(f"managed path appeared after removal: {path}")
+            else:
+                snapshot = snapshot_file(path, owner_only=True)
+                if snapshot is None or snapshot.digest != sha256_bytes(content):
+                    fail_concurrent(f"managed path changed after replacement: {path}")
+        if postcondition is not None:
+            postcondition()
+    except BaseException:
+        restore_managed_hold(target, hold, moved, desired, changing)
+        raise
+    if moved and path_exists_no_follow(hold):
+        return retire_path_after_commit(root, target, hold, "managed-replace")
+    if path_exists_no_follow(hold):
+        hold.rmdir()
+        fsync_directory(hold.parent)
+    return False
 
 
 def remove_created_target_if_empty(target: Path, existed_before: bool) -> None:
@@ -1723,15 +1953,19 @@ def create_backup(
     pool.chmod(OWNER_DIRECTORY_MODE)
     status = inspect_target(target)
     desired: dict[str, bytes | None] = {name: None for name in MANAGED_PATHS}
-    digests: dict[str, str | None] = {}
+    records: dict[str, dict[str, Any] | None] = {}
     for name in (*MANAGED_FILES, *BUILDER_FILES):
         path = target_path(target, name)
         if path_exists_no_follow(path):
             content, _ = read_regular_file(path, f"managed path {path}", owner_only=True)
             desired[name] = content
-            digests[name] = sha256_bytes(content)
+            records[name] = {
+                "path": name,
+                "size": len(content),
+                "sha256": sha256_bytes(content),
+            }
         else:
-            digests[name] = None
+            records[name] = None
     stamp_digest: str | None = None
     stamp = target / STAMP_NAME
     if path_exists_no_follow(stamp):
@@ -1757,7 +1991,7 @@ def create_backup(
         "slot": slot,
         "canonical_target": str(target),
         "source_setup_id": status["setup_id"] if status["state"] == "managed" else None,
-        "managed_paths": digests,
+        "managed_paths": records,
         "stamp_sha256": stamp_digest,
     }
     try:
@@ -1769,10 +2003,19 @@ def create_backup(
         replaced = pool / f".{slot}.replaced"
         if replaced.exists():
             fail(f"backup replacement residue already exists: {replaced}")
+        destination_moved = False
         if destination.exists():
             destination.rename(replaced)
-        staging.rename(destination)
-        fsync_directory(pool)
+            fsync_directory(pool)
+            destination_moved = True
+        try:
+            staging.rename(destination)
+            fsync_directory(pool)
+        except BaseException:
+            if destination_moved and path_exists_no_follow(replaced) and not path_exists_no_follow(destination):
+                replaced.rename(destination)
+                fsync_directory(pool)
+            raise
         cleanup_pending = False
         if replaced.exists():
             root = require_control_root(create=True)
@@ -1821,7 +2064,7 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
         fail(f"backup slot {slot} identity or schema is invalid")
     if envelope["canonical_target"] != str(target):
         fail(f"backup slot {slot} is bound to a different canonical target")
-    digests = validate_digest_map(envelope["managed_paths"], f"backup slot {slot}")
+    records = validate_backup_record_map(envelope["managed_paths"], f"backup slot {slot}")
     stamp_digest = envelope["stamp_sha256"]
     if stamp_digest is not None and (
         not isinstance(stamp_digest, str) or SHA256_PATTERN.fullmatch(stamp_digest) is None
@@ -1830,15 +2073,17 @@ def load_backup(target: Path, slot: int) -> tuple[dict[str, Any], dict[str, byte
     payload_root = slot_root / "payload"
     require_directory(payload_root, f"backup slot {slot} payload")
     desired: dict[str, bytes | None] = {name: None for name in MANAGED_PATHS}
-    for name, digest in digests.items():
-        if digest is None:
+    for name, record in records.items():
+        if record is None:
             continue
         content, _ = read_regular_file(
             payload_root / name,
             f"backup slot {slot} payload {name}",
             owner_only=True,
         )
-        if sha256_bytes(content) != digest:
+        if len(content) != record["size"]:
+            fail(f"backup slot {slot} payload size mismatch for {name}")
+        if sha256_bytes(content) != record["sha256"]:
             fail(f"backup slot {slot} payload digest mismatch for {name}")
         desired[name] = content
     if stamp_digest is not None:
@@ -1914,7 +2159,8 @@ def plan_setup(target: Path, setup_id: str) -> dict[str, Any]:
 
 def rollback_to(target: Path, rollback_desired: dict[str, bytes | None]) -> None:
     current = snapshot_managed(target, owner_only=False)
-    replace_managed_state(target, rollback_desired, current)
+    root = require_control_root(create=True)
+    replace_managed_state(target, rollback_desired, current, root=root)
 
 
 def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
@@ -1943,6 +2189,8 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
             fail("switch requires a managed target with a different setup")
         backup_slot: int | None = None
         rollback_desired: dict[str, bytes | None] | None = None
+        backup_cleanup_pending = False
+        managed_cleanup_pending = False
         before = snapshot_managed(target, owner_only=True)
         if plan["backup_required"]:
             backup_slot, rollback_desired, backup_cleanup_pending = create_backup(target)
@@ -1954,17 +2202,23 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
                 setup_id,
                 preserve_from_current=prior_status["state"] == "managed",
             )
-            replace_managed_state(target, desired, before)
-            final = require_clean_managed(target)
-            if final["setup_id"] != setup_id:
-                fail("postcondition failed: setup identity mismatch")
+            root = require_control_root(create=True)
+
+            def postcondition() -> None:
+                final = require_clean_managed(target)
+                if final["setup_id"] != setup_id:
+                    fail("postcondition failed: setup identity mismatch")
+
+            managed_cleanup_pending = replace_managed_state(
+                target,
+                desired,
+                before,
+                root=root,
+                postcondition=postcondition,
+            )
         except BaseException:
-            if rollback_desired is not None:
-                rollback_to(target, rollback_desired)
-            else:
-                empty = {name: None for name in MANAGED_PATHS}
-                rollback_to(target, empty)
-                remove_created_target_if_empty(target, existed_before)
+            del rollback_desired
+            remove_created_target_if_empty(target, existed_before)
             raise
     return {
         "schema_version": 1,
@@ -1973,7 +2227,7 @@ def mutate_setup(target: Path, setup_id: str, command: str) -> dict[str, Any]:
         "setup_id": setup_id,
         "changed": plan["changes"],
         "backup_slot": backup_slot,
-        "cleanup_pending": backup_cleanup_pending if backup_slot is not None else False,
+        "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
     }
 
 
@@ -1994,14 +2248,25 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         rollback_slot, rollback_desired, backup_cleanup_pending = create_backup(
             target, exclude=slot
         )
+        managed_cleanup_pending = False
         try:
             ensure_private_directory(target, create=True)
-            replace_managed_state(target, restore_desired, before)
-            final = require_clean_managed(target)
-            if final["setup_id"] != envelope["source_setup_id"]:
-                fail("postcondition failed: restored setup identity mismatch")
+            root = require_control_root(create=True)
+
+            def postcondition() -> None:
+                final = require_clean_managed(target)
+                if final["setup_id"] != envelope["source_setup_id"]:
+                    fail("postcondition failed: restored setup identity mismatch")
+
+            managed_cleanup_pending = replace_managed_state(
+                target,
+                restore_desired,
+                before,
+                root=root,
+                postcondition=postcondition,
+            )
         except BaseException:
-            rollback_to(target, rollback_desired)
+            del rollback_desired
             raise
     return {
         "schema_version": 1,
@@ -2010,7 +2275,7 @@ def restore_slot(target: Path, slot: int) -> dict[str, Any]:
         "setup_id": envelope["source_setup_id"],
         "restored_backup_slot": slot,
         "rollback_backup_slot": rollback_slot,
-        "cleanup_pending": backup_cleanup_pending,
+        "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
     }
 
 
@@ -2020,11 +2285,18 @@ def remove_setup(target: Path) -> dict[str, Any]:
         status = require_clean_managed(target)
         before = snapshot_managed(target, owner_only=True)
         backup_slot, rollback_desired, backup_cleanup_pending = create_backup(target)
+        managed_cleanup_pending = False
         try:
             desired = {name: None for name in MANAGED_PATHS}
-            replace_managed_state(target, desired, before)
+            root = require_control_root(create=True)
+            managed_cleanup_pending = replace_managed_state(
+                target,
+                desired,
+                before,
+                root=root,
+            )
         except BaseException:
-            rollback_to(target, rollback_desired)
+            del rollback_desired
             raise
     return {
         "schema_version": 1,
@@ -2032,7 +2304,7 @@ def remove_setup(target: Path) -> dict[str, Any]:
         "target": str(target),
         "removed_setup_id": status["setup_id"],
         "backup_slot": backup_slot,
-        "cleanup_pending": backup_cleanup_pending,
+        "cleanup_pending": backup_cleanup_pending or managed_cleanup_pending,
     }
 
 
@@ -2805,8 +3077,13 @@ def replace_software_state(target: Path, live_stage: Path, hold_parent: Path) ->
         for relative in SOFTWARE_REPLACE_PATHS:
             move_replace_path(live_stage / relative, target / relative)
             installed_new.append(relative)
-        status = software_status(target)
-        if not status["installed"] or not status["current"]:
+        manifest = load_json_object(
+            software_manifest_path(target),
+            "Qwen Code software manifest",
+            owner_only=True,
+        )
+        expected = build_software_manifest(target)
+        if manifest != expected or manifest.get("version") != TESTED_QWEN_CODE_VERSION:
             fail("installed Qwen Code CLI did not validate as the tested standalone version")
         committed = True
     except BaseException:
@@ -2979,7 +3256,7 @@ def remove_cli(target: Path) -> dict[str, Any]:
                 with contextlib.suppress(OSError):
                     parent.rmdir()
                     fsync_directory(parent.parent)
-        after = software_status(target)
+        after = software_presence(target)
         if after["software_state"] != "absent":
             fail("postcondition failed: Qwen Code software is still present")
     except BaseException:

@@ -34,6 +34,7 @@
     "public_control_root_override": false,
     "default_target": null,
     "max_backups": 10,
+    "backup_managed_path_record_schema": "path-size-sha256",
     "new_target_mode": "0700",
     "preserve_existing_target_mode": true,
     "rollback_on_failure": true
