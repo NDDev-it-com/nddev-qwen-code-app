@@ -64,7 +64,6 @@ CONTROLLED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 INSTALLER_MAX_BYTES = 1024 * 1024
 SOFTWARE_TREE_MAX_BYTES = 1024 * 1024 * 1024
 SOFTWARE_TREE_MAX_PATHS = 100000
-CONTROL_ROOT_ENV = "NDDEV_QWEN_CODE_CONTROL_ROOT"
 CONTROL_ROOT_RELATIVE = Path(".nddev") / "qwen-code"
 PRODUCT_ANCHOR_NAME = "product.lock"
 TARGET_ANCHOR_DIRECTORY = "targets"
@@ -248,6 +247,14 @@ class FileSnapshot:
 
 
 @dataclass(frozen=True)
+class LaunchImage:
+    root: Path
+    executable: Path
+    digest: str
+    inode: tuple[int, int]
+
+
+@dataclass(frozen=True)
 class HostModel:
     product_host_id: str
     vendor_os: str
@@ -419,13 +426,22 @@ def open_no_follow(path: Path, flags: int, mode: int | None = None) -> int:
 
 
 def control_root_path() -> Path:
-    configured = os.environ.get(CONTROL_ROOT_ENV)
-    if configured:
-        root = Path(configured).expanduser()
-        if not root.is_absolute():
-            fail(f"{CONTROL_ROOT_ENV} must be an absolute path")
-        return root
-    return Path.home() / CONTROL_ROOT_RELATIVE
+    if platform.system() == "Darwin":
+        parent = Path("/private/tmp")
+    else:
+        parent = Path("/tmp")
+    try:
+        info = parent.lstat()
+    except FileNotFoundError:
+        fail(f"Qwen Code control parent is missing: {parent}")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        fail(f"Qwen Code control parent must be a real directory: {parent}")
+    if not (info.st_mode & stat.S_ISVTX):
+        fail(f"Qwen Code control parent must be sticky: {parent}")
+    uid = current_uid()
+    if uid is None:
+        fail("Qwen Code control root requires a numeric local user id")
+    return parent / f".{PRODUCT_NAME}.uid-{uid}"
 
 
 def ensure_private_directory_component(path: Path) -> None:
@@ -481,6 +497,20 @@ def cleanup_root_path(root: Path, target: Path) -> Path:
     return root / CLEANUP_DIRECTORY_NAME / target_digest(target)
 
 
+def validate_cold_read_namespace(root: Path | None) -> None:
+    if root is None or not path_exists_no_follow(root):
+        return
+    info = require_directory(root, "Qwen Code control root")
+    if not is_owner_private_directory(info):
+        fail(f"Qwen Code control root must be a private manager-owned directory: {root}")
+    product_anchor = product_anchor_path(root)
+    if path_exists_no_follow(product_anchor):
+        return
+    entries = sorted(entry.name for entry in root.iterdir())
+    if entries:
+        fail("Qwen Code control namespace is orphaned without a product anchor")
+
+
 def anchor_payload(kind: str, *, target: Path | None = None) -> bytes:
     payload: dict[str, Any] = {
         "schema_version": 1,
@@ -533,7 +563,7 @@ def validate_anchor_path(
     *,
     kind: str,
     target: Path | None = None,
-    recover_alias: bool = False,
+    allow_publication_alias: bool = False,
 ) -> os.stat_result:
     content, info = read_regular_file(
         path,
@@ -544,23 +574,11 @@ def validate_anchor_path(
     )
     validate_anchor_content(path, content, kind, target)
     if info.st_nlink != 1:
-        if not recover_alias:
+        if not allow_publication_alias:
             fail(f"coordination anchor {path} has an incomplete publication alias")
         aliases = publication_aliases_for(path, info)
         if len(aliases) != 1 or info.st_nlink != 2:
             fail(f"coordination anchor {path} has unknown hard-link aliases")
-        aliases[0].unlink()
-        fsync_directory(path.parent)
-        content, info = read_regular_file(
-            path,
-            f"coordination anchor {path}",
-            owner_only=True,
-            max_bytes=METADATA_MAX_BYTES,
-            allow_hardlinks=True,
-        )
-        validate_anchor_content(path, content, kind, target)
-        if info.st_nlink != 1:
-            fail(f"coordination anchor {path} alias recovery did not converge")
     return info
 
 
@@ -578,14 +596,22 @@ def publish_no_replace_file(
         os.O_WRONLY | os.O_CREAT | os.O_EXCL,
         OWNER_FILE_MODE,
     )
+    linked = False
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.fchmod(stream.fileno(), OWNER_FILE_MODE)
+        try:
+            offset = 0
+            while offset < len(content):
+                written = os.write(descriptor, content[offset:])
+                if written <= 0:
+                    fail(f"short write while publishing {path}")
+                offset += written
+            os.fchmod(descriptor, OWNER_FILE_MODE)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         try:
             os.link(temporary, path)
+            linked = True
         except FileExistsError:
             temporary.unlink()
             fsync_directory(path.parent)
@@ -594,17 +620,87 @@ def publish_no_replace_file(
             temporary.unlink()
             fsync_directory(path.parent)
             raise QwenCodeSetupError(f"coordination anchor publication failed: {exc}") from exc
-        try:
-            temporary.unlink()
-        finally:
-            fsync_directory(path.parent)
+        fsync_directory(path.parent)
+        temporary.unlink()
+        fsync_directory(path.parent)
     finally:
-        if path_exists_no_follow(temporary):
+        if not linked and path_exists_no_follow(temporary):
             try:
                 temporary.unlink()
                 fsync_directory(temporary.parent)
             except OSError:
                 pass
+
+
+def publish_anchor_no_replace(path: Path, content: bytes) -> None:
+    if len(content) > METADATA_MAX_BYTES:
+        fail(f"coordination anchor {path} exceeds the metadata bound")
+    ensure_private_directory_component(path.parent)
+    temporary = path.parent / (
+        f"{ANCHOR_PUBLICATION_PREFIX}{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    descriptor = open_no_follow(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        OWNER_FILE_MODE,
+    )
+    linked = False
+    try:
+        try:
+            offset = 0
+            while offset < len(content):
+                written = os.write(descriptor, content[offset:])
+                if written <= 0:
+                    fail(f"short write while publishing coordination anchor {path}")
+                offset += written
+            os.fchmod(descriptor, OWNER_FILE_MODE)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(temporary, path)
+            linked = True
+        except FileExistsError:
+            temporary.unlink()
+            fsync_directory(path.parent)
+            return
+        except OSError as exc:
+            temporary.unlink()
+            fsync_directory(path.parent)
+            raise QwenCodeSetupError(f"coordination anchor publication failed: {exc}") from exc
+        # The final path is now a monotonic rendezvous object. The publication
+        # alias remains until the final inode has been locked and revalidated.
+        fsync_directory(path.parent)
+    finally:
+        if not linked and path_exists_no_follow(temporary):
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+                fsync_directory(temporary.parent)
+
+
+def recover_anchor_publication_alias_after_lock(
+    path: Path,
+    info: os.stat_result,
+    *,
+    kind: str,
+    target: Path | None,
+) -> os.stat_result:
+    aliases = publication_aliases_for(path, info)
+    if len(aliases) != 1 or info.st_nlink != 2:
+        fail(f"coordination anchor {path} has unknown hard-link aliases")
+    aliases[0].unlink()
+    fsync_directory(path.parent)
+    content, current = read_regular_file(
+        path,
+        f"coordination anchor {path}",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+        allow_hardlinks=True,
+    )
+    validate_anchor_content(path, content, kind, target)
+    if current.st_nlink != 1:
+        fail(f"coordination anchor {path} alias recovery did not converge")
+    return current
 
 
 @contextlib.contextmanager
@@ -617,18 +713,39 @@ def anchor_lock(
     create: bool,
 ) -> Iterator[None]:
     if create:
-        publish_no_replace_file(path, anchor_payload(kind, target=target))
-    validate_anchor_path(path, kind=kind, target=target, recover_alias=exclusive)
+        publish_anchor_no_replace(path, anchor_payload(kind, target=target))
+    validate_anchor_path(
+        path,
+        kind=kind,
+        target=target,
+        allow_publication_alias=exclusive,
+    )
     descriptor = open_no_follow(path, os.O_RDWR)
     try:
         opened = os.fstat(descriptor)
-        current = validate_anchor_path(path, kind=kind, target=target, recover_alias=exclusive)
+        current = validate_anchor_path(
+            path,
+            kind=kind,
+            target=target,
+            allow_publication_alias=exclusive,
+        )
         if identity_of(opened) != identity_of(current):
             fail_concurrent(f"coordination anchor {path} changed during open")
         fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
         locked = os.fstat(descriptor)
         if identity_of(locked) != identity_of(current):
             fail_concurrent(f"coordination anchor {path} changed during lock")
+        if current.st_nlink != 1:
+            if not exclusive:
+                fail(f"coordination anchor {path} has an incomplete publication alias")
+            current = recover_anchor_publication_alias_after_lock(
+                path,
+                current,
+                kind=kind,
+                target=target,
+            )
+            if identity_of(os.fstat(descriptor)) != identity_of(current):
+                fail_concurrent(f"coordination anchor {path} changed during alias recovery")
         yield
     finally:
         with contextlib.suppress(OSError):
@@ -2905,14 +3022,95 @@ def builder_status(target: Path) -> dict[str, Any]:
     }
 
 
-def spawn_qwen_child(executable: str, child_args: list[str], environment: dict[str, str]) -> int:
+def sh_single_quote(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def launch_source_identity(path: Path, root: Path) -> tuple[os.stat_result, str]:
+    before = require_safe_executable(path, root, "Qwen Code launch source")
+    digest = digest_regular_file(path, "Qwen Code launch source", {"value": 0})
+    after = require_safe_executable(path, root, "Qwen Code launch source")
+    if identity_of(before) != identity_of(after):
+        fail_concurrent("Qwen Code launch source changed during validation")
+    return after, digest
+
+
+def validate_launch_image(image: LaunchImage) -> None:
+    info = require_regular_file(image.executable, "Qwen Code launch handoff")
+    if hasattr(os, "geteuid") and owner_of(info) != os.geteuid():
+        fail("Qwen Code launch handoff must be owned by the current user")
+    if stat.S_IMODE(info.st_mode) != 0o500:
+        fail("Qwen Code launch handoff must be non-writable with mode 0500")
+    if identity_of(info) != image.inode:
+        fail_concurrent("Qwen Code launch handoff identity changed")
+    content, reopened = read_regular_file(
+        image.executable,
+        "Qwen Code launch handoff",
+        max_bytes=METADATA_MAX_BYTES,
+    )
+    if identity_of(reopened) != image.inode or sha256_bytes(content) != image.digest:
+        fail_concurrent("Qwen Code launch handoff changed while being read")
+
+
+def prepare_launch_image(target: Path, executable: Path) -> LaunchImage:
+    source_info, source_digest = launch_source_identity(executable, target)
+    launch_parent = create_or_require_private_child_directory(
+        target,
+        Path("runtime") / "launch-images",
+    )
+    image_root = launch_parent / f".nddev-qwen-code-launch.{os.getpid()}.{uuid.uuid4().hex}"
+    image_root.mkdir(mode=OWNER_DIRECTORY_MODE)
+    fsync_directory(launch_parent)
+    handoff = image_root / QWEN_COMMAND
+    script = (
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"exec {sh_single_quote(str(executable))} \"$@\"\n"
+    ).encode("utf-8")
+    durable_write_file(handoff, script, 0o500)
+    image_root.chmod(0o500)
+    fsync_directory(launch_parent)
+    info = require_regular_file(handoff, "Qwen Code launch handoff")
+    image = LaunchImage(
+        root=image_root,
+        executable=handoff,
+        digest=sha256_bytes(script),
+        inode=identity_of(info),
+    )
+    validate_launch_image(image)
+    current_info, current_digest = launch_source_identity(executable, target)
+    if identity_of(current_info) != identity_of(source_info) or current_digest != source_digest:
+        fail_concurrent("Qwen Code launch source changed before handoff")
+    return image
+
+
+def cleanup_launch_image(image: LaunchImage) -> None:
+    if not path_exists_no_follow(image.root):
+        return
+    image.root.chmod(OWNER_DIRECTORY_MODE)
+    if path_exists_no_follow(image.executable):
+        image.executable.unlink()
+        fsync_directory(image.root)
+    image.root.rmdir()
+    fsync_directory(image.root.parent)
+
+
+def spawn_qwen_child(
+    executable: Path,
+    child_args: list[str],
+    environment: dict[str, str],
+    revalidate: Any,
+) -> int:
     try:
-        completed = subprocess.run([executable, *child_args], env=environment, check=False)
+        revalidate()
+        process = subprocess.Popen([str(executable), *child_args], env=environment)
+        revalidate()
     except FileNotFoundError:
         fail("qwen executable disappeared before launch")
-    if completed.returncode < 0:
-        return 128 + abs(completed.returncode)
-    return completed.returncode
+    returncode = process.wait()
+    if returncode < 0:
+        return 128 + abs(returncode)
+    return returncode
 
 
 def first_qwen_scope_override(child_args: list[str]) -> str | None:
@@ -2937,8 +3135,20 @@ def launch_qwen(target: Path, child_args: list[str]) -> int:
     require_clean_managed(target)
     installation = require_current_software(target)
     environment = launch_environment(target)
-    executable = str(installation["executable"])
-    return spawn_qwen_child(executable, forwarded, environment)
+    executable = Path(str(installation["executable"]))
+    source_info, source_digest = launch_source_identity(executable, target)
+    image = prepare_launch_image(target, executable)
+
+    def revalidate_launch() -> None:
+        validate_launch_image(image)
+        current_info, current_digest = launch_source_identity(executable, target)
+        if identity_of(current_info) != identity_of(source_info) or current_digest != source_digest:
+            fail_concurrent("Qwen Code launch source changed before child handoff")
+
+    try:
+        return spawn_qwen_child(image.executable, forwarded, environment, revalidate_launch)
+    finally:
+        cleanup_launch_image(image)
 
 
 def coordinated_target_read(raw_target: str, callback: Any) -> Any:
@@ -2946,6 +3156,7 @@ def coordinated_target_read(raw_target: str, callback: Any) -> Any:
     lexical = validate_lexical_target(raw_target)
     root = require_control_root(create=False)
     if root is None or not path_exists_no_follow(product_anchor_path(root)):
+        validate_cold_read_namespace(root)
         target = canonicalize_target(lexical)
         result = callback(target)
         root_after = require_control_root(create=False)
@@ -2953,19 +3164,28 @@ def coordinated_target_read(raw_target: str, callback: Any) -> Any:
             return result
         root = root_after
     product_anchor = product_anchor_path(root)
+    target_context: Any = None
+    target: Path | None = None
     with anchor_lock(product_anchor, kind="product", target=None, exclusive=False, create=False):
         target = canonicalize_target(lexical)
         target_anchor = target_anchor_path(root, target)
         if path_exists_no_follow(target_anchor):
-            with anchor_lock(
+            target_context = anchor_lock(
                 target_anchor,
                 kind="target",
                 target=target,
                 exclusive=False,
                 create=False,
-            ):
-                return callback(target)
+            )
+            target_context.__enter__()
+        else:
+            return callback(target)
+    if target_context is None or target is None:
+        fail_concurrent("target coordination handoff failed")
+    try:
         return callback(target)
+    finally:
+        target_context.__exit__(None, None, None)
 
 
 def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
@@ -2973,20 +3193,28 @@ def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
     lexical = validate_lexical_target(raw_target)
     root = require_control_root(create=True)
     product_anchor = product_anchor_path(root)
+    target_context: Any = None
+    target: Path | None = None
     with anchor_lock(product_anchor, kind="product", target=None, exclusive=True, create=True):
         target = canonicalize_target(lexical)
         targets_root = root / TARGET_ANCHOR_DIRECTORY
         ensure_private_directory_component(targets_root)
         target_anchor = target_anchor_path(root, target)
-        with anchor_lock(
+        target_context = anchor_lock(
             target_anchor,
             kind="target",
             target=target,
             exclusive=True,
             create=True,
-        ):
-            drain_cleanup(root, target, read_only=False)
-            return callback(target)
+        )
+        target_context.__enter__()
+    if target_context is None or target is None:
+        fail_concurrent("target coordination handoff failed")
+    try:
+        drain_cleanup(root, target, read_only=False)
+        return callback(target)
+    finally:
+        target_context.__exit__(None, None, None)
 
 
 def human_output(value: dict[str, Any]) -> str:

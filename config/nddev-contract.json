@@ -31,6 +31,7 @@
     "missing_target_argument_rejected": true,
     "target_symlinks_rejected": true,
     "canonical_target_binding": true,
+    "public_control_root_override": false,
     "default_target": null,
     "max_backups": 10,
     "new_target_mode": "0700",
@@ -68,6 +69,7 @@
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
+    "launch_handoff": "private non-writable verified handoff image",
     "path_inherited": false,
     "target_must_equal_qwen_home": true
   },
