@@ -5,6 +5,7 @@
 - Split Qwen Code content setup identity from runtime approval profiles.
 - Keep `balanced` as legacy inspection state while new installs use
   `nddev-builder` with `full-auto` or `safe`.
+- Restore recursive cleanup support in the standalone manager.
 
 ## 0.1.0 - 2026-07-26
 
