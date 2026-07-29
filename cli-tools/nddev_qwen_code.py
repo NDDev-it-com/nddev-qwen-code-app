@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
-import ctypes
 import errno
 import fcntl
 import hashlib
@@ -114,7 +113,9 @@ RECOVERY_COMMIT_NAME = "committed.json"
 RECOVERY_HOLD_DIRECTORY = "hold"
 RECOVERY_STAGE_DIRECTORY = "stage"
 RECOVERY_MAX_OPERATIONS = 64
-RECOVERY_MAX_GRAPH_ENTRIES = SOFTWARE_TREE_MAX_PATHS if "SOFTWARE_TREE_MAX_PATHS" in globals() else 100000
+RECOVERY_MAX_GRAPH_ENTRIES = (
+    SOFTWARE_TREE_MAX_PATHS if "SOFTWARE_TREE_MAX_PATHS" in globals() else 100000
+)
 RECOVERY_MAX_SERIALIZED_BYTES = 4 * 1024 * 1024
 SOFTWARE_DIR_RELATIVE = Path("lib") / "qwen-code"
 SOFTWARE_MANIFEST_RELATIVE = Path("software") / "qwen-code.json"
@@ -921,10 +922,7 @@ def ensure_product_namespace_publishable(path: Path) -> None:
     for entry in entries:
         if entry.name == path.name or entry.name.startswith(prefix):
             continue
-        fail(
-            "Qwen Code control namespace is not empty without a product anchor: "
-            + entry.name
-        )
+        fail("Qwen Code control namespace is not empty without a product anchor: " + entry.name)
     anchor_publication_stage_paths(path)
 
 
@@ -1023,7 +1021,9 @@ def publish_no_replace_file(
                 pass
 
 
-def unlink_created_stage(stage: Path, identity: tuple[int, int], parent: DirectoryMetadataSnapshot) -> None:
+def unlink_created_stage(
+    stage: Path, identity: tuple[int, int], parent: DirectoryMetadataSnapshot
+) -> None:
     try:
         info = stage.lstat()
     except FileNotFoundError:
@@ -1048,7 +1048,9 @@ def prepare_anchor_publication_stage(
     if len(content) > METADATA_MAX_BYTES:
         fail(f"coordination anchor {path} exceeds the metadata bound")
     created_parent = ensure_private_directory_component_held(path.parent)
-    parent_snapshot = snapshot_directory_metadata(path.parent, f"coordination namespace {path.parent}")
+    parent_snapshot = snapshot_directory_metadata(
+        path.parent, f"coordination namespace {path.parent}"
+    )
     temporary = anchor_publication_stage_path(path)
     descriptor = open_no_follow(
         temporary,
@@ -4523,7 +4525,9 @@ def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
                 target_context.__enter__()
             except BaseException:
                 if not path_exists_no_follow(target_anchor):
-                    rollback_created_directory(targets_creation, f"target anchor directory {targets_root}")
+                    rollback_created_directory(
+                        targets_creation, f"target anchor directory {targets_root}"
+                    )
                 raise
             finally:
                 close_created_directory_signature(targets_creation)

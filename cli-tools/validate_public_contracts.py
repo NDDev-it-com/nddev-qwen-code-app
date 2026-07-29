@@ -171,7 +171,9 @@ def replace_empty_directory_at_path(path: Path) -> tuple[tuple[int, int], tuple[
     nddev_qwen_code.fsync_directory(parent)
     replacement_info = path.lstat()
     parent_info = parent.lstat()
-    return nddev_qwen_code.identity_of(replacement_info), nddev_qwen_code.namespace_identity(parent_info)
+    return nddev_qwen_code.identity_of(replacement_info), nddev_qwen_code.namespace_identity(
+        parent_info
+    )
 
 
 def assert_created_directory_replacement_survives(
@@ -1274,7 +1276,9 @@ def validate_anchor_publication_contract(errors: list[str]) -> None:
         chosen_identity = nddev_qwen_code.identity_of(
             sorted(stages, key=lambda item: item.path.name)[0].path.lstat()
         )
-        with nddev_qwen_code.anchor_lock(anchor, kind="product", target=None, exclusive=True, create=True):
+        with nddev_qwen_code.anchor_lock(
+            anchor, kind="product", target=None, exclusive=True, create=True
+        ):
             pass
         require(
             nddev_qwen_code.identity_of(anchor.lstat()) == chosen_identity,
@@ -1307,10 +1311,14 @@ def validate_anchor_publication_contract(errors: list[str]) -> None:
         )
         os.link(winning_stage.path, anchor)
         nddev_qwen_code.fsync_directory(anchor.parent)
-        with nddev_qwen_code.anchor_lock(anchor, kind="product", target=None, exclusive=True, create=True):
+        with nddev_qwen_code.anchor_lock(
+            anchor, kind="product", target=None, exclusive=True, create=True
+        ):
             pass
         require(anchor.exists(), "concurrent winner final anchor missing", errors)
-        require(anchor.lstat().st_nlink == 1, "concurrent winner final anchor nlink mismatch", errors)
+        require(
+            anchor.lstat().st_nlink == 1, "concurrent winner final anchor nlink mismatch", errors
+        )
         require(
             not losing_stage.path.exists() and not winning_stage.path.exists(),
             "concurrent winner stage drain left residue",
@@ -1409,7 +1417,11 @@ def validate_anchor_publication_contract(errors: list[str]) -> None:
         targets_creation = nddev_qwen_code.ensure_private_directory_component_held(targets)
         nddev_qwen_code.rollback_created_directory(targets_creation, "created targets root")
         after_root = nddev_qwen_code.snapshot_directory_metadata(root, "created-targets parent")
-        require(before_root.identity == after_root.identity, "created targets parent metadata changed", errors)
+        require(
+            before_root.identity == after_root.identity,
+            "created targets parent metadata changed",
+            errors,
+        )
 
     with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-replace-root-") as temp_root:
         temp = Path(temp_root)
@@ -1431,7 +1443,9 @@ def validate_anchor_publication_contract(errors: list[str]) -> None:
         if signature is not None:
             assert_created_directory_replacement_survives(signature, "created targets root", errors)
 
-    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-replace-publish-parent-") as temp_root:
+    with tempfile.TemporaryDirectory(
+        prefix="nddev-qwen-anchor-replace-publish-parent-"
+    ) as temp_root:
         temp = Path(temp_root)
         root = temp / "control"
         make_private_dir(root)
