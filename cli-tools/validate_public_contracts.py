@@ -187,7 +187,7 @@ def main() -> int:
         for error in errors:
             print(f"error: {error}")
         return 1
-    print("public contracts ok")
+    print("validate_public_contracts.py: PASS")
     return 0
 
 
