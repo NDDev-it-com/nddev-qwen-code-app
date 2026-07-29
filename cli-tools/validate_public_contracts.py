@@ -7,6 +7,8 @@ import importlib.util
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -84,6 +86,118 @@ def read_json(relative: str) -> dict[str, Any]:
 def require(condition: bool, message: str, errors: list[str]) -> None:
     if not condition:
         errors.append(message)
+
+
+def file_tree_snapshot(root: Path) -> list[tuple[Any, ...]]:
+    if not root.exists():
+        return []
+    rows: list[tuple[Any, ...]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root))):
+        relative = str(path.relative_to(root))
+        info = path.lstat()
+        mode = info.st_mode
+        payload: bytes | str | None = None
+        if os.path.islink(path):
+            payload = os.readlink(path)
+        elif path.is_file():
+            payload = path.read_bytes()
+        rows.append(
+            (
+                relative,
+                mode,
+                getattr(info, "st_uid", None),
+                info.st_nlink,
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                payload,
+            )
+        )
+    return rows
+
+
+def make_private_dir(path: Path) -> None:
+    path.mkdir(parents=True, mode=nddev_qwen_code.OWNER_DIRECTORY_MODE)
+    path.chmod(nddev_qwen_code.OWNER_DIRECTORY_MODE)
+
+
+def write_private_file(path: Path, content: bytes) -> None:
+    path.write_bytes(content)
+    path.chmod(nddev_qwen_code.OWNER_FILE_MODE)
+
+
+def assert_anchor_failure_unchanged(
+    action: Any,
+    root: Path,
+    label: str,
+    errors: list[str],
+) -> None:
+    before = file_tree_snapshot(root)
+    try:
+        action()
+    except nddev_qwen_code.QwenCodeSetupError:
+        pass
+    else:
+        errors.append(f"{label} unexpectedly succeeded")
+        return
+    after = file_tree_snapshot(root)
+    require(before == after, f"{label} mutated the coordination namespace", errors)
+
+
+def acquire_anchor_once(anchor: Path, kind: str, target: Path | None) -> None:
+    with nddev_qwen_code.anchor_lock(
+        anchor,
+        kind=kind,
+        target=target,
+        exclusive=True,
+        create=True,
+    ):
+        pass
+
+
+def replace_empty_directory_at_path(path: Path) -> tuple[tuple[int, int], tuple[Any, ...]]:
+    parent = path.parent
+    replacement = parent / f".{path.name}.replacement"
+    saved = parent / f".{path.name}.saved"
+    path.rename(saved)
+    nddev_qwen_code.fsync_directory(parent)
+    saved.rmdir()
+    nddev_qwen_code.fsync_directory(parent)
+    replacement.mkdir(mode=nddev_qwen_code.OWNER_DIRECTORY_MODE)
+    replacement.chmod(nddev_qwen_code.OWNER_DIRECTORY_MODE)
+    nddev_qwen_code.fsync_directory(parent)
+    replacement.rename(path)
+    nddev_qwen_code.fsync_directory(parent)
+    replacement_info = path.lstat()
+    parent_info = parent.lstat()
+    return nddev_qwen_code.identity_of(replacement_info), nddev_qwen_code.namespace_identity(parent_info)
+
+
+def assert_created_directory_replacement_survives(
+    signature: Any,
+    label: str,
+    errors: list[str],
+) -> None:
+    replacement_identity, parent_after_replace = replace_empty_directory_at_path(signature.path)
+    try:
+        nddev_qwen_code.rollback_created_directory(signature, label)
+    except nddev_qwen_code.QwenCodeSetupError:
+        pass
+    else:
+        errors.append(f"{label} rollback accepted a same-path replacement")
+        return
+    current = signature.path.lstat()
+    require(
+        nddev_qwen_code.identity_of(current) == replacement_identity,
+        f"{label} rollback removed or replaced the same-path replacement",
+        errors,
+    )
+    require(
+        nddev_qwen_code.namespace_identity(signature.path.parent.lstat()) == parent_after_replace,
+        f"{label} rollback restored parent metadata after replacement",
+        errors,
+    )
 
 
 def validate_versions(errors: list[str]) -> None:
@@ -1048,6 +1162,303 @@ def validate_parser_contract(errors: list[str]) -> None:
         errors.append(f"legacy setup compatibility accepted invalid argv {argv!r}")
 
 
+def stage_kill_script(anchor: Path, kind: str, target: Path | None) -> str:
+    target_expr = "None" if target is None else f"Path({str(target)!r})"
+    return f"""
+import importlib.util
+import os
+import signal
+import sys
+from pathlib import Path
+manager_path = Path({str(MANAGER_PATH)!r})
+spec = importlib.util.spec_from_file_location("nddev_qwen_code_stage_kill", manager_path)
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+anchor = Path({str(anchor)!r})
+target = {target_expr}
+payload = module.anchor_payload({kind!r}, target=target)
+module.prepare_anchor_publication_stage(anchor, payload, kind={kind!r}, target=target)
+os.kill(os.getpid(), signal.SIGKILL)
+"""
+
+
+def assert_sigkill_stage_recovery(
+    root: Path,
+    anchor: Path,
+    kind: str,
+    target: Path | None,
+    errors: list[str],
+) -> None:
+    environment = {
+        **os.environ,
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str(root.parent / "pycache"),
+    }
+    system_python = Path("/usr/bin/python3")
+    python = str(system_python if system_python.exists() else Path(sys.executable))
+    completed = subprocess.run(
+        [python, "-B", "-c", stage_kill_script(anchor, kind, target)],
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    require(
+        completed.returncode == -signal.SIGKILL,
+        f"{kind} stage child did not die by SIGKILL: {completed.returncode}",
+        errors,
+    )
+    require(not anchor.exists(), f"{kind} final anchor appeared before link", errors)
+    payload = nddev_qwen_code.anchor_payload(kind, target=target)
+    try:
+        stages = nddev_qwen_code.valid_anchor_publication_stages(
+            anchor,
+            payload,
+            kind=kind,
+            target=target,
+        )
+    except nddev_qwen_code.QwenCodeSetupError as exc:
+        errors.append(f"{kind} SIGKILL stage did not validate: {exc}")
+        return
+    require(len(stages) == 1, f"{kind} SIGKILL stage count mismatch", errors)
+    before = file_tree_snapshot(root)
+    with nddev_qwen_code.anchor_lock(anchor, kind=kind, target=target, exclusive=True, create=True):
+        pass
+    after = file_tree_snapshot(root)
+    final = anchor.lstat()
+    require(anchor.exists(), f"{kind} final anchor was not promoted", errors)
+    require(final.st_nlink == 1, f"{kind} final anchor did not converge to nlink=1", errors)
+    require(
+        not any(row[0].endswith(".tmp") for row in after),
+        f"{kind} publication stage residue remained after recovery",
+        errors,
+    )
+    require(before != after, f"{kind} recovery did not mutate expected namespace", errors)
+
+
+def validate_anchor_publication_contract(errors: list[str]) -> None:
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-public-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        make_private_dir(root)
+        product = nddev_qwen_code.product_anchor_path(root)
+        assert_sigkill_stage_recovery(root, product, "product", None, errors)
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-target-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        targets = root / nddev_qwen_code.TARGET_ANCHOR_DIRECTORY
+        make_private_dir(targets)
+        target = temp / "target"
+        anchor = nddev_qwen_code.target_anchor_path(root, target)
+        assert_sigkill_stage_recovery(root, anchor, "target", target, errors)
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-multi-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        make_private_dir(root)
+        anchor = nddev_qwen_code.product_anchor_path(root)
+        payload = nddev_qwen_code.anchor_payload("product", target=None)
+        stages = [
+            nddev_qwen_code.prepare_anchor_publication_stage(
+                anchor,
+                payload,
+                kind="product",
+                target=None,
+            )
+            for _ in range(nddev_qwen_code.ANCHOR_STAGE_CANDIDATE_LIMIT)
+        ]
+        chosen_identity = nddev_qwen_code.identity_of(
+            sorted(stages, key=lambda item: item.path.name)[0].path.lstat()
+        )
+        with nddev_qwen_code.anchor_lock(anchor, kind="product", target=None, exclusive=True, create=True):
+            pass
+        require(
+            nddev_qwen_code.identity_of(anchor.lstat()) == chosen_identity,
+            "multiple valid stages did not promote deterministically",
+            errors,
+        )
+        require(
+            not any(row[0].endswith(".tmp") for row in file_tree_snapshot(root)),
+            "multiple valid stage drain left residue",
+            errors,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-winner-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        make_private_dir(root)
+        anchor = nddev_qwen_code.product_anchor_path(root)
+        payload = nddev_qwen_code.anchor_payload("product", target=None)
+        losing_stage = nddev_qwen_code.prepare_anchor_publication_stage(
+            anchor,
+            payload,
+            kind="product",
+            target=None,
+        )
+        winning_stage = nddev_qwen_code.prepare_anchor_publication_stage(
+            anchor,
+            payload,
+            kind="product",
+            target=None,
+        )
+        os.link(winning_stage.path, anchor)
+        nddev_qwen_code.fsync_directory(anchor.parent)
+        with nddev_qwen_code.anchor_lock(anchor, kind="product", target=None, exclusive=True, create=True):
+            pass
+        require(anchor.exists(), "concurrent winner final anchor missing", errors)
+        require(anchor.lstat().st_nlink == 1, "concurrent winner final anchor nlink mismatch", errors)
+        require(
+            not losing_stage.path.exists() and not winning_stage.path.exists(),
+            "concurrent winner stage drain left residue",
+            errors,
+        )
+
+    def seed_stage_symlink(anchor: Path, payload: bytes) -> None:
+        source = anchor.parent.parent / "stage-source"
+        write_private_file(source, payload)
+        os.symlink(source, nddev_qwen_code.anchor_publication_stage_path(anchor))
+
+    def seed_stage_hardlink(anchor: Path, payload: bytes) -> None:
+        first = nddev_qwen_code.anchor_publication_stage_path(anchor)
+        write_private_file(first, payload)
+        second = nddev_qwen_code.anchor_publication_stage_path(anchor)
+        os.link(first, second)
+
+    hostile_cases = {
+        "unknown": lambda anchor, _payload: write_private_file(
+            anchor.parent / "unrelated-entry",
+            b"unknown",
+        ),
+        "malformed": lambda anchor, payload: write_private_file(
+            anchor.parent / f"{nddev_qwen_code.anchor_publication_prefix_for(anchor)}bad.tmp",
+            payload,
+        ),
+        "mismatch": lambda anchor, _payload: write_private_file(
+            nddev_qwen_code.anchor_publication_stage_path(anchor),
+            b'{"schema_version":1,"product_name":"wrong","kind":"product"}\n',
+        ),
+        "excessive": lambda anchor, payload: [
+            nddev_qwen_code.prepare_anchor_publication_stage(
+                anchor,
+                payload,
+                kind="product",
+                target=None,
+            )
+            for _ in range(nddev_qwen_code.ANCHOR_STAGE_CANDIDATE_LIMIT + 1)
+        ],
+        "symlink": seed_stage_symlink,
+        "hardlink": seed_stage_hardlink,
+    }
+    for label, seed in hostile_cases.items():
+        with tempfile.TemporaryDirectory(prefix=f"nddev-qwen-anchor-{label}-") as temp_root:
+            temp = Path(temp_root)
+            root = temp / "control"
+            make_private_dir(root)
+            anchor = nddev_qwen_code.product_anchor_path(root)
+            payload = nddev_qwen_code.anchor_payload("product", target=None)
+            seed(anchor, payload)
+            assert_anchor_failure_unchanged(
+                lambda: acquire_anchor_once(anchor, "product", None),
+                root,
+                f"{label} publication stage",
+                errors,
+            )
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-cold-read-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        before_absent = file_tree_snapshot(temp)
+        snapshot = nddev_qwen_code.cold_read_namespace_snapshot(root)
+        require(snapshot.state == "absent", "cold read absent namespace mismatch", errors)
+        require(
+            file_tree_snapshot(temp) == before_absent,
+            "cold read created a control namespace",
+            errors,
+        )
+        make_private_dir(root)
+        snapshot = nddev_qwen_code.cold_read_namespace_snapshot(root)
+        require(snapshot.state == "empty", "cold read empty namespace mismatch", errors)
+        unknown = root / "unknown.tmp"
+        write_private_file(unknown, b"unknown")
+        assert_anchor_failure_unchanged(
+            lambda: nddev_qwen_code.cold_read_namespace_snapshot(root),
+            root,
+            "cold read unknown namespace entry",
+            errors,
+        )
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-root-") as temp_root:
+        temp = Path(temp_root)
+        parent = temp / "parent"
+        make_private_dir(parent)
+        before = nddev_qwen_code.snapshot_directory_metadata(parent, "created-root parent")
+        root = parent / "control"
+        root_creation = nddev_qwen_code.ensure_private_directory_component_held(root)
+        nddev_qwen_code.rollback_created_directory(root_creation, "created control root")
+        after = nddev_qwen_code.snapshot_directory_metadata(parent, "created-root parent")
+        require(before.identity == after.identity, "created root parent metadata changed", errors)
+
+        root.mkdir(mode=nddev_qwen_code.OWNER_DIRECTORY_MODE)
+        root.chmod(nddev_qwen_code.OWNER_DIRECTORY_MODE)
+        targets = root / nddev_qwen_code.TARGET_ANCHOR_DIRECTORY
+        before_root = nddev_qwen_code.snapshot_directory_metadata(root, "created-targets parent")
+        targets_creation = nddev_qwen_code.ensure_private_directory_component_held(targets)
+        nddev_qwen_code.rollback_created_directory(targets_creation, "created targets root")
+        after_root = nddev_qwen_code.snapshot_directory_metadata(root, "created-targets parent")
+        require(before_root.identity == after_root.identity, "created targets parent metadata changed", errors)
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-replace-root-") as temp_root:
+        temp = Path(temp_root)
+        parent = temp / "parent"
+        make_private_dir(parent)
+        root = parent / "control"
+        signature = nddev_qwen_code.ensure_private_directory_component_held(root)
+        require(signature is not None, "created control root signature missing", errors)
+        if signature is not None:
+            assert_created_directory_replacement_survives(signature, "created control root", errors)
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-replace-targets-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        make_private_dir(root)
+        targets = root / nddev_qwen_code.TARGET_ANCHOR_DIRECTORY
+        signature = nddev_qwen_code.ensure_private_directory_component_held(targets)
+        require(signature is not None, "created targets root signature missing", errors)
+        if signature is not None:
+            assert_created_directory_replacement_survives(signature, "created targets root", errors)
+
+    with tempfile.TemporaryDirectory(prefix="nddev-qwen-anchor-replace-publish-parent-") as temp_root:
+        temp = Path(temp_root)
+        root = temp / "control"
+        make_private_dir(root)
+        target = temp / "target"
+        anchor = nddev_qwen_code.target_anchor_path(root, target)
+        payload = nddev_qwen_code.anchor_payload("target", target=target)
+        stage = nddev_qwen_code.prepare_anchor_publication_stage(
+            anchor,
+            payload,
+            kind="target",
+            target=target,
+        )
+        require(
+            stage.created_parent is not None,
+            "target-anchor publication parent signature missing",
+            errors,
+        )
+        stage.path.unlink()
+        nddev_qwen_code.fsync_directory(stage.path.parent)
+        if stage.created_parent is not None:
+            assert_created_directory_replacement_survives(
+                stage.created_parent,
+                "target-anchor publication parent",
+                errors,
+            )
+
+
 def validate_public_tree(errors: list[str]) -> None:
     own_path = Path(__file__).resolve()
     for path in sorted(ROOT.rglob("*")):
@@ -1069,6 +1480,7 @@ def main() -> int:
         validate_runtime_and_software(errors)
         validate_builder(errors)
         validate_parser_contract(errors)
+        validate_anchor_publication_contract(errors)
         validate_public_tree(errors)
     except Exception as exc:  # noqa: BLE001 - concise public CLI failure.
         errors.append(str(exc))

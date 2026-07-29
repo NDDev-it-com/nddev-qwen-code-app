@@ -100,6 +100,7 @@ PRODUCT_ANCHOR_NAME = "product.lock"
 TARGET_ANCHOR_DIRECTORY = "targets"
 TARGET_ANCHOR_SUFFIX = ".lock"
 ANCHOR_PUBLICATION_PREFIX = ".nddev-qwen-code-publish-"
+ANCHOR_STAGE_CANDIDATE_LIMIT = 8
 CLEANUP_DIRECTORY_NAME = "cleanup"
 CLEANUP_PREPARE_NAME = "prepare.json"
 CLEANUP_JOURNAL_NAME = "pending.json"
@@ -325,6 +326,37 @@ class ColdNamespaceSnapshot:
     root_identity: tuple[Any, ...] | None = None
 
 
+@dataclass(frozen=True)
+class DirectoryMetadataSnapshot:
+    path: Path
+    identity: tuple[Any, ...]
+    mode: int
+    atime_ns: int
+    mtime_ns: int
+
+
+@dataclass
+class CreatedDirectorySignature:
+    path: Path
+    fd: int | None
+    parent: DirectoryMetadataSnapshot
+    identity: tuple[int, int]
+    file_type: int
+    uid: int | None
+    gid: int | None
+    mode: int
+    nlink: int
+
+
+@dataclass(frozen=True)
+class AnchorStage:
+    path: Path
+    identity: tuple[int, int]
+    content: bytes
+    parent_snapshot: DirectoryMetadataSnapshot | None = None
+    created_parent: CreatedDirectorySignature | None = None
+
+
 def fail(message: str) -> NoReturn:
     raise QwenCodeSetupError(message)
 
@@ -507,18 +539,109 @@ def control_root_path() -> Path:
     return parent / f".{PRODUCT_NAME}.uid-{uid}"
 
 
-def ensure_private_directory_component(path: Path) -> None:
+def open_directory_no_follow(path: Path) -> int:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    return os.open(path, flags)
+
+
+def created_directory_signature(
+    path: Path,
+    fd: int,
+    parent: DirectoryMetadataSnapshot,
+    label: str,
+) -> CreatedDirectorySignature:
+    opened = os.fstat(fd)
+    current = require_directory(path, label)
+    if identity_of(opened) != identity_of(current):
+        fail_concurrent(f"{label} changed before it could be bound")
+    if not stat.S_ISDIR(opened.st_mode) or not is_owner_private_directory(opened):
+        fail(f"{label} must be a private manager-owned directory")
+    return CreatedDirectorySignature(
+        path=path,
+        fd=fd,
+        parent=parent,
+        identity=identity_of(opened),
+        file_type=stat.S_IFMT(opened.st_mode),
+        uid=owner_of(opened),
+        gid=opened.st_gid if hasattr(opened, "st_gid") else None,
+        mode=stat.S_IMODE(opened.st_mode),
+        nlink=opened.st_nlink,
+    )
+
+
+def close_created_directory_signature(signature: CreatedDirectorySignature | None) -> None:
+    if signature is None or signature.fd is None:
+        return
+    fd = signature.fd
+    signature.fd = None
+    os.close(fd)
+
+
+def created_directory_signature_matches(
+    signature: CreatedDirectorySignature,
+    info: os.stat_result,
+) -> bool:
+    gid = info.st_gid if hasattr(info, "st_gid") else None
+    return (
+        identity_of(info) == signature.identity
+        and stat.S_IFMT(info.st_mode) == signature.file_type
+        and owner_of(info) == signature.uid
+        and gid == signature.gid
+        and stat.S_IMODE(info.st_mode) == signature.mode
+        and info.st_nlink == signature.nlink
+    )
+
+
+def validate_created_directory_signature(
+    signature: CreatedDirectorySignature,
+    label: str,
+) -> os.stat_result:
+    if signature.fd is None:
+        fail(f"{label} creation signature is closed")
+    opened = os.fstat(signature.fd)
+    if not created_directory_signature_matches(signature, opened):
+        fail(f"{label} held directory signature changed")
+    current = require_directory(signature.path, label)
+    if not created_directory_signature_matches(signature, current):
+        fail(f"{label} path was replaced before rollback")
+    return current
+
+
+def ensure_private_directory_component_held(path: Path) -> CreatedDirectorySignature | None:
     try:
         info = path.lstat()
     except FileNotFoundError:
-        parent = path.parent
-        require_directory(parent, f"{path.name} parent")
-        path.mkdir(mode=OWNER_DIRECTORY_MODE)
-        path.chmod(OWNER_DIRECTORY_MODE)
-        fsync_directory(parent)
-        info = path.lstat()
+        parent = snapshot_directory_metadata(path.parent, f"{path.name} parent")
+        signature: CreatedDirectorySignature | None = None
+        fd: int | None = None
+        try:
+            path.mkdir(mode=OWNER_DIRECTORY_MODE)
+            fd = open_directory_no_follow(path)
+            os.fchmod(fd, OWNER_DIRECTORY_MODE)
+            signature = created_directory_signature(path, fd, parent, f"private directory {path}")
+            fd = None
+            fsync_directory(path.parent)
+            return signature
+        except BaseException:
+            if signature is not None:
+                rollback_created_directory(signature, f"private directory {path}")
+            elif fd is not None:
+                os.close(fd)
+            raise
     if not is_owner_private_directory(info):
         fail(f"{path} must be a private manager-owned directory")
+    return None
+
+
+def ensure_private_directory_component(path: Path) -> None:
+    signature = ensure_private_directory_component_held(path)
+    close_created_directory_signature(signature)
 
 
 def require_control_root(*, create: bool) -> Path | None:
@@ -528,16 +651,7 @@ def require_control_root(*, create: bool) -> Path | None:
     except FileNotFoundError:
         if not create:
             return None
-        parents = [root]
-        cursor = root.parent
-        while not cursor.exists():
-            parents.append(cursor)
-            cursor = cursor.parent
-        require_directory(cursor, "control root ancestor")
-        for directory in reversed(parents):
-            directory.mkdir(mode=OWNER_DIRECTORY_MODE)
-            directory.chmod(OWNER_DIRECTORY_MODE)
-            fsync_directory(directory.parent)
+        ensure_private_directory_component(root)
         info = root.lstat()
     if not is_owner_private_directory(info):
         fail(f"Qwen Code control root must be a private manager-owned directory: {root}")
@@ -570,6 +684,44 @@ def namespace_identity(info: os.stat_result) -> tuple[Any, ...]:
         info.st_size,
         info.st_mtime_ns,
     )
+
+
+def snapshot_directory_metadata(path: Path, label: str) -> DirectoryMetadataSnapshot:
+    info = require_directory(path, label)
+    return DirectoryMetadataSnapshot(
+        path=path,
+        identity=namespace_identity(info),
+        mode=stat.S_IMODE(info.st_mode),
+        atime_ns=info.st_atime_ns,
+        mtime_ns=info.st_mtime_ns,
+    )
+
+
+def restore_directory_metadata(snapshot: DirectoryMetadataSnapshot, label: str) -> None:
+    info = require_directory(snapshot.path, label)
+    if stat.S_IMODE(info.st_mode) != snapshot.mode:
+        os.chmod(snapshot.path, snapshot.mode)
+    os.utime(snapshot.path, ns=(snapshot.atime_ns, snapshot.mtime_ns))
+    final = require_directory(snapshot.path, label)
+    if namespace_identity(final) != snapshot.identity:
+        fail(f"{label} metadata did not restore exactly")
+
+
+def rollback_created_directory(
+    signature: CreatedDirectorySignature | None,
+    label: str,
+) -> None:
+    if signature is None:
+        return
+    try:
+        validate_created_directory_signature(signature, label)
+        if list(signature.path.iterdir()):
+            fail(f"{label} rollback found unexpected entries")
+        signature.path.rmdir()
+        fsync_directory(signature.path.parent)
+        restore_directory_metadata(signature.parent, f"{label} parent")
+    finally:
+        close_created_directory_signature(signature)
 
 
 def cold_read_namespace_snapshot(root: Path | None) -> ColdNamespaceSnapshot:
@@ -624,16 +776,144 @@ def validate_anchor_content(path: Path, content: bytes, kind: str, target: Path 
         fail(f"coordination anchor {path} target binding mismatch")
 
 
+def anchor_publication_prefix_for(path: Path) -> str:
+    return f"{ANCHOR_PUBLICATION_PREFIX}{path.name}."
+
+
+def anchor_publication_stage_path(path: Path) -> Path:
+    return path.parent / (
+        f"{anchor_publication_prefix_for(path)}{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+
+
+def is_anchor_publication_stage_name(path: Path, name: str) -> bool:
+    prefix = anchor_publication_prefix_for(path)
+    if not name.startswith(prefix) or not name.endswith(".tmp"):
+        return False
+    suffix = name[len(prefix) : -len(".tmp")]
+    parts = suffix.split(".")
+    return (
+        len(parts) == 2
+        and parts[0].isdigit()
+        and 1 <= len(parts[0]) <= 20
+        and re.fullmatch(r"[0-9a-f]{32}", parts[1]) is not None
+    )
+
+
+def anchor_publication_stage_paths(path: Path) -> list[Path]:
+    try:
+        entries = sorted(path.parent.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        fail(f"cannot enumerate coordination namespace {path.parent}: {exc}")
+    prefix = anchor_publication_prefix_for(path)
+    candidates = [entry for entry in entries if entry.name.startswith(prefix)]
+    if len(candidates) > ANCHOR_STAGE_CANDIDATE_LIMIT:
+        fail(f"coordination anchor {path} has excessive publication stages")
+    for entry in candidates:
+        if not is_anchor_publication_stage_name(path, entry.name):
+            fail(f"coordination anchor {path} has malformed publication stage {entry.name}")
+    return candidates
+
+
+def validate_anchor_publication_stage(
+    stage: Path,
+    path: Path,
+    content: bytes,
+    *,
+    kind: str,
+    target: Path | None,
+) -> AnchorStage:
+    if not is_anchor_publication_stage_name(path, stage.name):
+        fail(f"coordination anchor {path} has malformed publication stage {stage.name}")
+    before = require_regular_file(
+        stage,
+        f"coordination anchor publication stage {stage}",
+        owner_only=True,
+        allow_hardlinks=False,
+    )
+    if before.st_size != len(content):
+        fail(f"coordination anchor publication stage {stage} has invalid size")
+    current_content, after = read_regular_file(
+        stage,
+        f"coordination anchor publication stage {stage}",
+        owner_only=True,
+        max_bytes=METADATA_MAX_BYTES,
+        allow_hardlinks=False,
+    )
+    if identity_of(after) != identity_of(before):
+        fail_concurrent(f"coordination anchor publication stage {stage} changed")
+    if current_content != content:
+        fail(f"coordination anchor publication stage {stage} payload mismatch")
+    validate_anchor_content(stage, current_content, kind, target)
+    return AnchorStage(path=stage, identity=identity_of(after), content=current_content)
+
+
+def valid_anchor_publication_stages(
+    path: Path,
+    content: bytes,
+    *,
+    kind: str,
+    target: Path | None,
+    final_info: os.stat_result | None = None,
+) -> list[AnchorStage]:
+    stages: list[AnchorStage] = []
+    for stage in anchor_publication_stage_paths(path):
+        try:
+            info = stage.lstat()
+        except FileNotFoundError:
+            continue
+        if final_info is not None and identity_of(info) == identity_of(final_info):
+            continue
+        stages.append(
+            validate_anchor_publication_stage(
+                stage,
+                path,
+                content,
+                kind=kind,
+                target=target,
+            )
+        )
+    return sorted(stages, key=lambda item: item.path.name)
+
+
+def ensure_no_anchor_publication_stages(path: Path) -> None:
+    if not path_exists_no_follow(path.parent):
+        return
+    stages = anchor_publication_stage_paths(path)
+    if stages:
+        fail(f"coordination anchor {path} has incomplete pre-link publication stages")
+
+
+def ensure_product_namespace_publishable(path: Path) -> None:
+    if path.name != PRODUCT_ANCHOR_NAME:
+        return
+    prefix = anchor_publication_prefix_for(path)
+    try:
+        entries = sorted(path.parent.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        fail(f"cannot enumerate coordination namespace {path.parent}: {exc}")
+    for entry in entries:
+        if entry.name == path.name or entry.name.startswith(prefix):
+            continue
+        fail(
+            "Qwen Code control namespace is not empty without a product anchor: "
+            + entry.name
+        )
+    anchor_publication_stage_paths(path)
+
+
 def publication_aliases_for(path: Path, info: os.stat_result) -> list[Path]:
     aliases: list[Path] = []
     try:
         entries = sorted(path.parent.iterdir(), key=lambda item: item.name)
     except OSError as exc:
         fail(f"cannot enumerate coordination namespace {path.parent}: {exc}")
-    prefix = f"{ANCHOR_PUBLICATION_PREFIX}{path.name}."
+    prefix = anchor_publication_prefix_for(path)
     for entry in entries:
         if not entry.name.startswith(prefix) or not entry.name.endswith(".tmp"):
             continue
+        if not is_anchor_publication_stage_name(path, entry.name):
+            fail(f"coordination anchor {path} has malformed publication alias {entry.name}")
         try:
             entry_info = entry.lstat()
         except FileNotFoundError:
@@ -717,50 +997,119 @@ def publish_no_replace_file(
                 pass
 
 
-def publish_anchor_no_replace(path: Path, content: bytes) -> None:
+def unlink_created_stage(stage: Path, identity: tuple[int, int], parent: DirectoryMetadataSnapshot) -> None:
+    try:
+        info = stage.lstat()
+    except FileNotFoundError:
+        restore_directory_metadata(parent, f"coordination namespace {stage.parent}")
+        return
+    if identity_of(info) != identity:
+        fail(f"coordination anchor publication stage {stage} changed before cleanup")
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        fail(f"coordination anchor publication stage {stage} changed kind before cleanup")
+    stage.unlink()
+    fsync_directory(stage.parent)
+    restore_directory_metadata(parent, f"coordination namespace {stage.parent}")
+
+
+def prepare_anchor_publication_stage(
+    path: Path,
+    content: bytes,
+    *,
+    kind: str,
+    target: Path | None,
+) -> AnchorStage:
     if len(content) > METADATA_MAX_BYTES:
         fail(f"coordination anchor {path} exceeds the metadata bound")
-    ensure_private_directory_component(path.parent)
-    temporary = path.parent / (
-        f"{ANCHOR_PUBLICATION_PREFIX}{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    created_parent = ensure_private_directory_component_held(path.parent)
+    parent_snapshot = snapshot_directory_metadata(path.parent, f"coordination namespace {path.parent}")
+    temporary = anchor_publication_stage_path(path)
     descriptor = open_no_follow(
         temporary,
         os.O_WRONLY | os.O_CREAT | os.O_EXCL,
         OWNER_FILE_MODE,
     )
+    descriptor_open = True
+    stage_identity: tuple[int, int] | None = identity_of(os.fstat(descriptor))
+    try:
+        offset = 0
+        while offset < len(content):
+            written = os.write(descriptor, content[offset:])
+            if written <= 0:
+                fail(f"short write while publishing coordination anchor {path}")
+            offset += written
+        os.fchmod(descriptor, OWNER_FILE_MODE)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor_open = False
+        fsync_directory(path.parent)
+        validated = validate_anchor_publication_stage(
+            temporary,
+            path,
+            content,
+            kind=kind,
+            target=target,
+        )
+    except BaseException:
+        if descriptor_open:
+            os.close(descriptor)
+        if stage_identity is not None:
+            unlink_created_stage(temporary, stage_identity, parent_snapshot)
+        elif path_exists_no_follow(temporary):
+            with contextlib.suppress(FileNotFoundError):
+                info = temporary.lstat()
+                if stat.S_ISREG(info.st_mode) and owner_of(info) == current_uid():
+                    temporary.unlink()
+                    fsync_directory(temporary.parent)
+            restore_directory_metadata(parent_snapshot, f"coordination namespace {path.parent}")
+        rollback_created_directory(created_parent, f"coordination anchor parent {path.parent}")
+        raise
+    return AnchorStage(
+        path=validated.path,
+        identity=validated.identity,
+        content=validated.content,
+        parent_snapshot=parent_snapshot,
+        created_parent=created_parent,
+    )
+
+
+def publish_anchor_no_replace(
+    path: Path,
+    content: bytes,
+    *,
+    kind: str,
+    target: Path | None,
+) -> AnchorStage:
+    stage = prepare_anchor_publication_stage(path, content, kind=kind, target=target)
     linked = False
     try:
         try:
-            offset = 0
-            while offset < len(content):
-                written = os.write(descriptor, content[offset:])
-                if written <= 0:
-                    fail(f"short write while publishing coordination anchor {path}")
-                offset += written
-            os.fchmod(descriptor, OWNER_FILE_MODE)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        try:
-            os.link(temporary, path)
+            os.link(stage.path, path)
             linked = True
         except FileExistsError:
-            temporary.unlink()
-            fsync_directory(path.parent)
             return
         except OSError as exc:
-            temporary.unlink()
-            fsync_directory(path.parent)
+            try:
+                if stage.parent_snapshot is not None:
+                    unlink_created_stage(stage.path, stage.identity, stage.parent_snapshot)
+                if not path_exists_no_follow(path):
+                    rollback_created_directory(
+                        stage.created_parent,
+                        f"coordination anchor parent {path.parent}",
+                    )
+            finally:
+                close_created_directory_signature(stage.created_parent)
             raise QwenCodeSetupError(f"coordination anchor publication failed: {exc}") from exc
         # The final path is now a monotonic rendezvous object. The publication
         # alias remains until the final inode has been locked and revalidated.
         fsync_directory(path.parent)
     finally:
-        if not linked and path_exists_no_follow(temporary):
-            with contextlib.suppress(OSError):
-                temporary.unlink()
-                fsync_directory(temporary.parent)
+        if not linked:
+            # A complete pre-link stage is durable recovery authority. It is
+            # intentionally left for the next exclusive opener to promote or
+            # drain after validating the final anchor.
+            pass
+    return stage
 
 
 def recover_anchor_publication_alias_after_lock(
@@ -770,9 +1119,19 @@ def recover_anchor_publication_alias_after_lock(
     kind: str,
     target: Path | None,
 ) -> os.stat_result:
+    valid_anchor_publication_stages(
+        path,
+        anchor_payload(kind, target=target),
+        kind=kind,
+        target=target,
+        final_info=info,
+    )
     aliases = publication_aliases_for(path, info)
     if len(aliases) != 1 or info.st_nlink != 2:
         fail(f"coordination anchor {path} has unknown hard-link aliases")
+    alias_info = aliases[0].lstat()
+    if identity_of(alias_info) != identity_of(info):
+        fail_concurrent(f"coordination anchor publication alias changed: {aliases[0]}")
     aliases[0].unlink()
     fsync_directory(path.parent)
     content, current = read_regular_file(
@@ -788,6 +1147,70 @@ def recover_anchor_publication_alias_after_lock(
     return current
 
 
+def promote_anchor_stage_before_open(
+    path: Path,
+    *,
+    kind: str,
+    target: Path | None,
+) -> None:
+    if path_exists_no_follow(path):
+        return
+    content = anchor_payload(kind, target=target)
+    stages = valid_anchor_publication_stages(
+        path,
+        content,
+        kind=kind,
+        target=target,
+    )
+    if not stages:
+        return
+    chosen = stages[0]
+    try:
+        os.link(chosen.path, path)
+    except FileExistsError:
+        return
+    except FileNotFoundError:
+        if path_exists_no_follow(path):
+            return
+        fail_concurrent(f"coordination anchor publication stage disappeared: {chosen.path}")
+    except OSError as exc:
+        raise QwenCodeSetupError(f"coordination anchor stage promotion failed: {exc}") from exc
+    fsync_directory(path.parent)
+
+
+def drain_anchor_stages_after_lock(
+    path: Path,
+    final_info: os.stat_result,
+    *,
+    kind: str,
+    target: Path | None,
+) -> os.stat_result:
+    content = anchor_payload(kind, target=target)
+    stages = valid_anchor_publication_stages(
+        path,
+        content,
+        kind=kind,
+        target=target,
+        final_info=final_info,
+    )
+    for stage in stages:
+        try:
+            info = stage.path.lstat()
+        except FileNotFoundError:
+            continue
+        if identity_of(info) != stage.identity:
+            fail_concurrent(f"coordination anchor publication stage changed: {stage.path}")
+        stage.path.unlink()
+        fsync_directory(stage.path.parent)
+    current = validate_anchor_path(
+        path,
+        kind=kind,
+        target=target,
+        allow_publication_alias=False,
+    )
+    return current
+
+
 @contextlib.contextmanager
 def anchor_lock(
     path: Path,
@@ -797,15 +1220,33 @@ def anchor_lock(
     exclusive: bool,
     create: bool,
 ) -> Iterator[None]:
-    if create:
-        publish_anchor_no_replace(path, anchor_payload(kind, target=target))
-    validate_anchor_path(
-        path,
-        kind=kind,
-        target=target,
-        allow_publication_alias=exclusive,
-    )
-    descriptor = open_no_follow(path, os.O_RDWR)
+    published_stage: AnchorStage | None = None
+    if create and exclusive:
+        if not path_exists_no_follow(path):
+            ensure_product_namespace_publishable(path)
+        promote_anchor_stage_before_open(path, kind=kind, target=target)
+    if create and not path_exists_no_follow(path):
+        published_stage = publish_anchor_no_replace(
+            path,
+            anchor_payload(kind, target=target),
+            kind=kind,
+            target=target,
+        )
+    if create and exclusive and not path_exists_no_follow(path):
+        promote_anchor_stage_before_open(path, kind=kind, target=target)
+    try:
+        validate_anchor_path(
+            path,
+            kind=kind,
+            target=target,
+            allow_publication_alias=exclusive,
+        )
+        descriptor = open_no_follow(path, os.O_RDWR)
+    except BaseException:
+        close_created_directory_signature(
+            published_stage.created_parent if published_stage is not None else None
+        )
+        raise
     try:
         opened = os.fstat(descriptor)
         current = validate_anchor_path(
@@ -831,11 +1272,26 @@ def anchor_lock(
             )
             if identity_of(os.fstat(descriptor)) != identity_of(current):
                 fail_concurrent(f"coordination anchor {path} changed during alias recovery")
+        if exclusive:
+            current = drain_anchor_stages_after_lock(
+                path,
+                current,
+                kind=kind,
+                target=target,
+            )
+            if identity_of(os.fstat(descriptor)) != identity_of(current):
+                fail_concurrent(f"coordination anchor {path} changed during stage drain")
+        close_created_directory_signature(
+            published_stage.created_parent if published_stage is not None else None
+        )
         yield
     finally:
         with contextlib.suppress(OSError):
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+        close_created_directory_signature(
+            published_stage.created_parent if published_stage is not None else None
+        )
 
 
 def read_regular_file(
@@ -3976,6 +4432,7 @@ def coordinated_target_read_locked(root: Path, lexical: Path, callback: Any) -> 
             )
             target_context.__enter__()
         else:
+            ensure_no_anchor_publication_stages(target_anchor)
             return callback(target)
     if target_context is None or target is None:
         fail_concurrent("target coordination handoff failed")
@@ -4013,23 +4470,43 @@ def coordinated_target_read(raw_target: str, callback: Any) -> Any:
 def coordinated_target_mutation(raw_target: str, callback: Any) -> Any:
     preflight_supported_host()
     lexical = validate_lexical_target(raw_target)
-    root = require_control_root(create=True)
-    product_anchor = product_anchor_path(root)
+    root_path = control_root_path()
+    root_creation: CreatedDirectorySignature | None = None
+    product_anchor = product_anchor_path(root_path)
     target_context: Any = None
     target: Path | None = None
-    with anchor_lock(product_anchor, kind="product", target=None, exclusive=True, create=True):
-        target = canonicalize_target(lexical)
-        targets_root = root / TARGET_ANCHOR_DIRECTORY
-        ensure_private_directory_component(targets_root)
-        target_anchor = target_anchor_path(root, target)
-        target_context = anchor_lock(
-            target_anchor,
-            kind="target",
-            target=target,
-            exclusive=True,
-            create=True,
-        )
-        target_context.__enter__()
+    try:
+        root_creation = ensure_private_directory_component_held(root_path)
+        root = require_control_root(create=False)
+        if root is None:
+            fail_concurrent("Qwen Code control root creation failed")
+        product_anchor = product_anchor_path(root)
+        with anchor_lock(product_anchor, kind="product", target=None, exclusive=True, create=True):
+            target = canonicalize_target(lexical)
+            targets_root = root / TARGET_ANCHOR_DIRECTORY
+            targets_creation = ensure_private_directory_component_held(targets_root)
+            target_anchor = target_anchor_path(root, target)
+            try:
+                target_context = anchor_lock(
+                    target_anchor,
+                    kind="target",
+                    target=target,
+                    exclusive=True,
+                    create=True,
+                )
+                target_context.__enter__()
+            except BaseException:
+                if not path_exists_no_follow(target_anchor):
+                    rollback_created_directory(targets_creation, f"target anchor directory {targets_root}")
+                raise
+            finally:
+                close_created_directory_signature(targets_creation)
+    except BaseException:
+        if not path_exists_no_follow(product_anchor):
+            rollback_created_directory(root_creation, f"Qwen Code control root {root_path}")
+        raise
+    finally:
+        close_created_directory_signature(root_creation)
     if target_context is None or target is None:
         fail_concurrent("target coordination handoff failed")
     try:
