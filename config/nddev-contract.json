@@ -7,20 +7,29 @@
   "version_ref": "build/version.json",
   "managed_state": {
     "stamp_file": "NDDEV-QWEN-CODE-SETUP.json",
-    "stamp_schema": 1,
+    "stamp_schema": 2,
+    "legacy_stamp_schema": {
+      "schema_version": 1,
+      "readable_setup_ids": ["safe", "full-auto"],
+      "migration_required_setup_ids": ["balanced"]
+    },
     "managed_file_mode": "0600",
-    "managed_files": ["settings.json", "QWEN.md"],
+    "managed_files": ["settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"],
     "managed_tree_root": "extensions/nddev-builder",
     "preserve_other_state": true
   },
   "setup_system": {
     "catalog_root": "setups",
     "identity_source": "setups/<setup-id>/setup.json",
-    "setup_ids": ["safe", "balanced", "full-auto"],
-    "selection_option": "--setup <safe|balanced|full-auto>",
+    "setup_ids": ["nddev-builder"],
+    "profile_root": "profiles",
+    "profile_ids": ["full-auto", "safe"],
+    "default_profile": "full-auto",
+    "legacy_setup_ids": ["safe", "balanced", "full-auto"],
+    "selection_option": "--setup nddev-builder --profile <full-auto|safe>",
     "list_command": "python3 cli-tools/nddev_qwen_code.py list [--json]",
     "status_command": "python3 cli-tools/nddev_qwen_code.py status --target <absolute-target> [--json]",
-    "launch_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "launch_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> [--workspace <absolute-project-dir>] -- [args...]",
     "builder_status_command": "python3 cli-tools/nddev_qwen_code.py builder-status --target <absolute-target> [--json]",
     "builder_default_on": true
   },
@@ -31,8 +40,10 @@
     "missing_target_argument_rejected": true,
     "target_symlinks_rejected": true,
     "canonical_target_binding": true,
+    "public_control_root_override": false,
     "default_target": null,
     "max_backups": 10,
+    "backup_managed_path_record_schema": "path-size-sha256",
     "new_target_mode": "0700",
     "preserve_existing_target_mode": true,
     "rollback_on_failure": true
@@ -40,11 +51,15 @@
   "runtime_compatibility": {
     "baseline_ref": "references/qwen-code-baseline.json",
     "version_ref": "build/version.json",
-    "tested_version": "0.21.0",
+    "tested_version": "0.21.1",
     "package": "@qwen-code/qwen-code",
-    "release_tag": "v0.21.0",
+    "release_tag": "v0.21.1",
     "documentation": [
       "docs/users/configuration/settings.md",
+      "docs/users/features/approval-mode.md",
+      "docs/users/features/hooks.md",
+      "docs/users/features/mcp.md",
+      "docs/users/features/memory.md",
       "docs/users/extension/introduction.md",
       "docs/users/features/skills.md",
       "docs/users/features/sub-agents.md"
@@ -55,34 +70,71 @@
     "direct_command": "QWEN_HOME=<absolute-target> QWEN_RUNTIME_DIR=<absolute-target>/runtime <absolute-target>/bin/qwen [args...]",
     "home_environment_variable": "QWEN_HOME",
     "runtime_environment_variable": "QWEN_RUNTIME_DIR",
-    "executable_source": "validated-target-owned-official-standalone-install",
+    "executable_source": "validated-target-owned-official-release-archive",
     "forwards_arguments": true,
     "forwards_child_exit_code": true,
     "json_manager_errors_supported": true,
-    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> -- [args...]",
+    "manager_command": "python3 cli-tools/nddev_qwen_code.py launch --target <absolute-target> [--workspace <absolute-project-dir>] -- [args...]",
     "requires_clean_managed_target": true,
     "streams_child_stdio": true,
     "successful_child_output_wrapped": false,
     "environment_scope": "child-process-only",
+    "launch_handoff": "private non-writable verified handoff image",
+    "workspace_scope": {
+      "manager_option": "--workspace <absolute-existing-directory>",
+      "default": "captured caller cwd",
+      "native_qwen_primary_workspace_flag": null,
+      "child_cwd_explicit": true,
+      "blocked_native_workspace_controls": [
+        "--include-directories",
+        "--add-dir",
+        "--includeDirectories",
+        "--addDir",
+        "--worktree",
+        "--workspace",
+        "--cwd"
+      ],
+      "blocked_short_value_forms": ["-e", "-i", "-m", "-o", "-p", "-r"],
+      "grammar_source_ref": "references/qwen-code-baseline.json:launch_scope_grammar"
+    },
     "path_inherited": false,
     "target_must_equal_qwen_home": true
   },
   "software_install": {
-    "tested_version": "0.21.0",
+    "tested_version": "0.21.1",
     "node_requires": ">=22.0.0",
-    "supported_platforms": ["macos", "linux"],
-    "installer": {
-      "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-      "sha256": "6078a358a75ef3dedfa6014fa1d14984a7da15e84aa34f0077cfec59337e9638",
-      "argv": ["--method", "standalone", "--version", "0.21.0", "--no-modify-path"],
-      "environment": "minimal-allowlist-target-owned-qwen-install-root",
-      "archive_verification": "official SHA256SUMS"
+    "supported_hosts": [
+      "macos-arm64",
+      "macos-x64",
+      "ubuntu-glibc-arm64",
+      "ubuntu-glibc-x64"
+    ],
+    "unsupported_categories": [
+      "windows",
+      "non-ubuntu-linux",
+      "linux-musl",
+      "unsupported-architecture"
+    ],
+    "ubuntu_version_floor": null,
+    "vendor_platforms": ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"],
+    "package_provenance": {
+      "name": "@qwen-code/qwen-code",
+      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
+      "tarball_size_bytes": 23836955,
+      "integrity": "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw==",
+      "shasum": "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d",
+      "scripts_enabled": false
+    },
+    "release_archive": {
+      "base_url": "https://github.com/QwenLM/qwen-code/releases/download/v0.21.1",
+      "verification": "pinned-size-sha256",
+      "materialization": "manager-owned-safe-extract-no-scripts"
     },
     "preconditions": {
       "install": "absent target-owned Qwen Code software surface",
       "update": "installed or safe partial target-owned Qwen Code software surface",
       "partial_state_policy": "install rejects any replace path or owned software parent; update may repair safe partial state",
-      "preflight": "existing replace paths and software parent directories are validated before installer download"
+      "preflight": "existing replace paths and software parent directories are validated before archive download"
     },
     "bounds": {
       "max_tree_paths": 100000,
@@ -99,7 +151,8 @@
     "commands": {
       "status": "python3 cli-tools/nddev_qwen_code.py software-status --target <absolute-target> [--json]",
       "install": "python3 cli-tools/nddev_qwen_code.py install-cli --target <absolute-target> [--json]",
-      "update": "python3 cli-tools/nddev_qwen_code.py update-cli --target <absolute-target> [--json]"
+      "update": "python3 cli-tools/nddev_qwen_code.py update-cli --target <absolute-target> [--json]",
+      "remove": "python3 cli-tools/nddev_qwen_code.py remove-cli --target <absolute-target> [--json]"
     }
   },
   "builder_extension": {

@@ -1,8 +1,0 @@
-{
-  "schema_version": 1,
-  "id": "safe",
-  "description": "Conservative Qwen Code setup that asks before file edits or shell commands.",
-  "managed_files": ["settings.json", "QWEN.md"],
-  "builder_extension": "extensions/nddev-builder",
-  "builder_default_on": true
-}

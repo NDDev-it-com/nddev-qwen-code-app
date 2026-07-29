@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Split Qwen Code content setup identity from runtime approval profiles.
+- Keep `balanced` as legacy inspection state while new installs use
+  `nddev-builder` with `full-auto` or `safe`.
+
 ## 0.1.0 - 2026-07-26
 
 - Implement the initial target-isolated Qwen Code setup manager.

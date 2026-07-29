@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "safe",
+  "description": "Reduced runtime profile that asks before edits or commands and keeps Qwen Code sandboxing enabled.",
+  "settings_overlay": {
+    "tools": {
+      "approvalMode": "default",
+      "sandbox": true
+    }
+  }
+}
