@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -14,7 +15,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -107,6 +107,14 @@ CLEANUP_JOURNAL_NAME = "pending.json"
 CLEANUP_TOMBSTONE_DIRECTORY = "tombstones"
 CLEANUP_MAX_TREE_ENTRIES = 2048
 CLEANUP_MAX_SERIALIZED_BYTES = 1024 * 1024
+RECOVERY_ROOT_SUFFIX = ".nddev-qwen-code-recovery"
+RECOVERY_MANIFEST_NAME = "manifest.json"
+RECOVERY_COMMIT_NAME = "committed.json"
+RECOVERY_HOLD_DIRECTORY = "hold"
+RECOVERY_STAGE_DIRECTORY = "stage"
+RECOVERY_MAX_OPERATIONS = 64
+RECOVERY_MAX_GRAPH_ENTRIES = SOFTWARE_TREE_MAX_PATHS if "SOFTWARE_TREE_MAX_PATHS" in globals() else 100000
+RECOVERY_MAX_SERIALIZED_BYTES = 4 * 1024 * 1024
 SOFTWARE_DIR_RELATIVE = Path("lib") / "qwen-code"
 SOFTWARE_MANIFEST_RELATIVE = Path("software") / "qwen-code.json"
 SOFTWARE_REPLACE_PATHS = (
@@ -355,6 +363,23 @@ class AnchorStage:
     content: bytes
     parent_snapshot: DirectoryMetadataSnapshot | None = None
     created_parent: CreatedDirectorySignature | None = None
+
+
+@dataclass
+class HeldGraph:
+    root: Path
+    records: list[dict[str, Any]]
+    descriptors: dict[str, int]
+
+
+@dataclass
+class RecoveryOperation:
+    anchor: str
+    relative: Path
+    before: HeldGraph | None
+    after: HeldGraph | None
+    hold_relative: Path
+    stage_relative: Path
 
 
 def fail(message: str) -> NoReturn:
