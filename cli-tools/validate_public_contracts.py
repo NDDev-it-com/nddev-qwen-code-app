@@ -80,6 +80,7 @@ def require(condition: bool, message: str, errors: list[str]) -> None:
     if not condition:
         errors.append(message)
 
+
 def require_regular(relative: str, errors: list[str]) -> None:
     path = ROOT / relative
     try:
@@ -136,8 +137,12 @@ def validate_versions(errors: list[str]) -> None:
 
     package = baseline.get("package", {})
     require(package.get("name") == build.get("qwen_code_package"), "package mismatch", errors)
-    require(package.get("version") == build.get("qwen_code_tested"), "tested version mismatch", errors)
-    require(package.get("tarball") == build.get("qwen_code_npm_tarball"), "tarball mismatch", errors)
+    require(
+        package.get("version") == build.get("qwen_code_tested"), "tested version mismatch", errors
+    )
+    require(
+        package.get("tarball") == build.get("qwen_code_npm_tarball"), "tarball mismatch", errors
+    )
     require(
         package.get("tarball_size_bytes") == build.get("qwen_code_npm_tarball_size_bytes"),
         "tarball size mismatch",
@@ -148,7 +153,9 @@ def validate_versions(errors: list[str]) -> None:
         "npm integrity mismatch",
         errors,
     )
-    require(package.get("shasum") == build.get("qwen_code_npm_shasum"), "npm shasum mismatch", errors)
+    require(
+        package.get("shasum") == build.get("qwen_code_npm_shasum"), "npm shasum mismatch", errors
+    )
     require(
         baseline.get("standalone_archives") == ARCHIVE_DIGESTS,
         "standalone archive digest catalog mismatch",
@@ -184,9 +191,21 @@ def validate_versions(errors: list[str]) -> None:
         ("manifest", manifest.get("runtime_compatibility", {})),
         ("contract", contract.get("runtime_compatibility", {})),
     ):
-        require(runtime.get("tested_version") == build.get("qwen_code_tested"), f"{owner} tested version mismatch", errors)
-        require(runtime.get("package") == build.get("qwen_code_package"), f"{owner} package mismatch", errors)
-        require(runtime.get("baseline_ref") == build.get("runtime_baseline_ref"), f"{owner} baseline mismatch", errors)
+        require(
+            runtime.get("tested_version") == build.get("qwen_code_tested"),
+            f"{owner} tested version mismatch",
+            errors,
+        )
+        require(
+            runtime.get("package") == build.get("qwen_code_package"),
+            f"{owner} package mismatch",
+            errors,
+        )
+        require(
+            runtime.get("baseline_ref") == build.get("runtime_baseline_ref"),
+            f"{owner} baseline mismatch",
+            errors,
+        )
 
 
 def validate_setup_profiles(errors: list[str]) -> None:
@@ -195,13 +214,31 @@ def validate_setup_profiles(errors: list[str]) -> None:
     setup = read_json("setups/nddev-builder/setup.json")
     settings = read_json("setups/nddev-builder/settings.json")
     require(manifest.get("setup_ids") == SETUP_IDS, "manifest setup ids mismatch", errors)
-    require(manifest.get("profile_ids") == list(PROFILE_POLICY), "manifest profile ids mismatch", errors)
-    require(manifest.get("permission_policy", {}).get("profiles") == PROFILE_POLICY, "permission policy mismatch", errors)
-    require(contract.get("setup_system", {}).get("setup_ids") == SETUP_IDS, "contract setup ids mismatch", errors)
-    require(contract.get("managed_state", {}).get("managed_files") == MANAGED_FILES, "managed files mismatch", errors)
+    require(
+        manifest.get("profile_ids") == list(PROFILE_POLICY), "manifest profile ids mismatch", errors
+    )
+    require(
+        manifest.get("permission_policy", {}).get("profiles") == PROFILE_POLICY,
+        "permission policy mismatch",
+        errors,
+    )
+    require(
+        contract.get("setup_system", {}).get("setup_ids") == SETUP_IDS,
+        "contract setup ids mismatch",
+        errors,
+    )
+    require(
+        contract.get("managed_state", {}).get("managed_files") == MANAGED_FILES,
+        "managed files mismatch",
+        errors,
+    )
     require(setup.get("id") == "nddev-builder", "setup id mismatch", errors)
     require(setup.get("managed_files") == MANAGED_FILES, "setup managed files mismatch", errors)
-    require(setup.get("builder_extension") == "extensions/nddev-builder", "builder source mismatch", errors)
+    require(
+        setup.get("builder_extension") == "extensions/nddev-builder",
+        "builder source mismatch",
+        errors,
+    )
     require(settings.get("context") == {"fileName": ["QWEN.md"]}, "context file mismatch", errors)
     require("approvalMode" not in settings.get("tools", {}), "setup owns approval mode", errors)
     require("sandbox" not in settings.get("tools", {}), "setup owns sandbox mode", errors)
@@ -221,11 +258,19 @@ def validate_runtime_metadata(errors: list[str]) -> None:
     baseline = read_json("references/qwen-code-baseline.json")
     for owner, document in (("manifest", manifest), ("contract", contract)):
         runtime = document.get("runtime_launch", {})
-        require(runtime.get("home_environment_variable") == "QWEN_HOME", f"{owner} QWEN_HOME mismatch", errors)
+        require(
+            runtime.get("home_environment_variable") == "QWEN_HOME",
+            f"{owner} QWEN_HOME mismatch",
+            errors,
+        )
         require(runtime.get("path_inherited") is False, f"{owner} PATH policy mismatch", errors)
         software = document.get("software_install", {})
         require(software.get("supported_hosts") == HOSTS, f"{owner} hosts mismatch", errors)
-        require(software.get("vendor_platforms") == list(ARCHIVE_DIGESTS), f"{owner} platforms mismatch", errors)
+        require(
+            software.get("vendor_platforms") == list(ARCHIVE_DIGESTS),
+            f"{owner} platforms mismatch",
+            errors,
+        )
         require(
             software.get("package_provenance", {}).get("integrity")
             == baseline.get("package", {}).get("integrity"),
@@ -245,7 +290,11 @@ def validate_builder(errors: list[str]) -> None:
     extension = read_json("extensions/nddev-builder/qwen-extension.json")
     builder = contract.get("builder_extension", {})
     require(extension.get("name") == "nddev-builder", "extension name mismatch", errors)
-    require(extension.get("version") == build.get("nddev_builder_extension_version"), "extension version mismatch", errors)
+    require(
+        extension.get("version") == build.get("nddev_builder_extension_version"),
+        "extension version mismatch",
+        errors,
+    )
     require(extension.get("contextFileName") == "QWEN.md", "extension context mismatch", errors)
     require(extension.get("skills") == "skills", "extension skills path mismatch", errors)
     require(extension.get("agents") == "agents", "extension agents path mismatch", errors)
@@ -253,7 +302,11 @@ def validate_builder(errors: list[str]) -> None:
     require(builder.get("default_on") is True, "builder default mismatch", errors)
     require(builder.get("marketplace_manifest") is False, "marketplace policy mismatch", errors)
     for relative in builder.get("native_paths", []):
-        require((ROOT / "extensions" / "nddev-builder" / relative).exists(), f"missing extension path: {relative}", errors)
+        require(
+            (ROOT / "extensions" / "nddev-builder" / relative).exists(),
+            f"missing extension path: {relative}",
+            errors,
+        )
 
 
 def validate_public_tree(errors: list[str]) -> None:
@@ -269,7 +322,9 @@ def validate_public_tree(errors: list[str]) -> None:
     for relative in (".claude", "setups/nddev-builder/.claude"):
         claude = ROOT / relative
         try:
-            require(stat.S_ISDIR(claude.lstat().st_mode), f"{relative} is not a real directory", errors)
+            require(
+                stat.S_ISDIR(claude.lstat().st_mode), f"{relative} is not a real directory", errors
+            )
             require(
                 {path.name for path in claude.iterdir()} == {"CLAUDE.md"},
                 f"{relative} contains unexpected entries",
@@ -282,7 +337,9 @@ def validate_public_tree(errors: list[str]) -> None:
         if path.is_dir() or ".git" in path.parts or path == own_path:
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
-        require(PLACEHOLDER_MARKER not in text, f"placeholder found in {path.relative_to(ROOT)}", errors)
+        require(
+            PLACEHOLDER_MARKER not in text, f"placeholder found in {path.relative_to(ROOT)}", errors
+        )
 
 
 def main() -> int:
