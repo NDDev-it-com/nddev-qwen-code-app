@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+import stat
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,15 @@ def read_json(relative: str) -> dict[str, Any]:
 def require(condition: bool, message: str, errors: list[str]) -> None:
     if not condition:
         errors.append(message)
+
+def require_regular(relative: str, errors: list[str]) -> None:
+    path = ROOT / relative
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        errors.append(f"missing required file: {relative}")
+        return
+    require(stat.S_ISREG(mode), f"required path is not a regular file: {relative}", errors)
 
 
 def validate_versions(errors: list[str]) -> None:
@@ -165,6 +175,26 @@ def validate_builder(errors: list[str]) -> None:
 
 
 def validate_public_tree(errors: list[str]) -> None:
+    for relative in (
+        "AGENTS.md",
+        ".claude/CLAUDE.md",
+        "extensions/nddev-builder/QWEN.md",
+        "setups/nddev-builder/QWEN.md",
+        "setups/nddev-builder/AGENTS.md",
+        "setups/nddev-builder/.claude/CLAUDE.md",
+    ):
+        require_regular(relative, errors)
+    for relative in (".claude", "setups/nddev-builder/.claude"):
+        claude = ROOT / relative
+        try:
+            require(stat.S_ISDIR(claude.lstat().st_mode), f"{relative} is not a real directory", errors)
+            require(
+                {path.name for path in claude.iterdir()} == {"CLAUDE.md"},
+                f"{relative} contains unexpected entries",
+                errors,
+            )
+        except FileNotFoundError:
+            errors.append(f"missing required directory: {relative}")
     own_path = Path(__file__).resolve()
     for path in sorted(ROOT.rglob("*")):
         if path.is_dir() or ".git" in path.parts or path == own_path:
