@@ -36,11 +36,6 @@
     "@teddyzhu/clipboard-win32-x64-msvc": "0.0.5",
     "sharp": "0.34.5"
   },
-  "mutable_installer_observation": {
-    "url": "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
-    "trusted_for_install": false,
-    "reason": "mutable installer script; manager uses pinned release archive and npm package provenance instead"
-  },
   "release_assets": {
     "cli.js": {
       "size_bytes": 12520,
