@@ -104,6 +104,11 @@ def validate_versions(errors: list[str]) -> None:
     require(build.get("build_version") == version, "build version mismatch", errors)
     require(manifest.get("build_version") == version, "manifest version mismatch", errors)
     require(build.get("python_requires") == ">=3.9", "python requirement mismatch", errors)
+    require(
+        "qwen_code_release_published_at" not in build,
+        "release publication observation must remain private",
+        errors,
+    )
     require(contract.get("version_ref") == "build/version.json", "version_ref mismatch", errors)
     require(contract.get("manifest_ref") == "build/manifest.json", "manifest_ref mismatch", errors)
 
@@ -135,6 +140,11 @@ def validate_versions(errors: list[str]) -> None:
     )
     release = baseline.get("release", {})
     require("api_url" not in release, "release API observation must remain private", errors)
+    require(
+        "published_at" not in release,
+        "release publication observation must remain private",
+        errors,
+    )
     require(
         "target_commitish" not in release,
         "release target commit observation must remain private",

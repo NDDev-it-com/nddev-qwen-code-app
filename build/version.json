@@ -5,7 +5,6 @@
   "node_requires": ">=22.0.0",
   "qwen_code_tested": "0.21.1",
   "qwen_code_release_tag": "v0.21.1",
-  "qwen_code_release_published_at": "2026-07-28T17:52:26Z",
   "qwen_code_package": "@qwen-code/qwen-code",
   "qwen_code_npm_tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz",
   "qwen_code_npm_tarball_size_bytes": 23836955,
