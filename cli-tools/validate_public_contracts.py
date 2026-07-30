@@ -29,6 +29,44 @@ ARCHIVE_DIGESTS = {
     "linux-x64": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c",
 }
 PLACEHOLDER_MARKER = "skele" + "ton"
+CANONICAL_INSTRUCTIONS = {
+    "AGENTS.md": (
+        b"# NDDev Qwen Code Public Module\n"
+        b"\n"
+        b"This repository owns the public, user-runnable Qwen Code setup manager.\n"
+        b"Runtime target instructions installed by the manager are sourced from\n"
+        b"`setups/nddev-builder/QWEN.md`; native extension instructions are sourced from\n"
+        b"`extensions/nddev-builder/QWEN.md`.\n"
+    ),
+    ".claude/CLAUDE.md": b"@../AGENTS.md\n",
+    "extensions/nddev-builder/QWEN.md": (
+        b"# NDDev Builder for Qwen Code\n"
+        b"\n"
+        b"Use Qwen Code's native extension system. A Qwen extension is a directory with a\n"
+        b"`qwen-extension.json` manifest and optional `QWEN.md`, `skills/`, `agents/`,\n"
+        b"`commands/`, MCP servers, channels, and extension settings.\n"
+        b"\n"
+        b"Do not invent a Qwen marketplace manifest for this package. Project Qwen Code\n"
+        b"capabilities directly onto the native extension, skill, and subagent surfaces.\n"
+    ),
+    "setups/nddev-builder/QWEN.md": (
+        b"# NDDev Qwen Code Builder Setup\n"
+        b"\n"
+        b"Work autonomously within the user's stated scope and repository instructions.\n"
+        b"The active manager profile selects the runtime approval posture. Keep\n"
+        b"destructive operations, secrets, external side effects, and unrelated user\n"
+        b"state protected even when approval prompts are not required. Use the NDDev\n"
+        b"Builder extension for Qwen-native extension, skill, agent, and settings\n"
+        b"authoring guidance when relevant.\n"
+    ),
+    "setups/nddev-builder/AGENTS.md": (
+        b"# NDDev Qwen Code Builder Setup\n"
+        b"\n"
+        b"Qwen Code reads `AGENTS.md` for cross-agent compatibility. See @QWEN.md for\n"
+        b"the authoritative setup instructions.\n"
+    ),
+    "setups/nddev-builder/.claude/CLAUDE.md": b"@../QWEN.md\n",
+}
 
 
 def read_json(relative: str) -> dict[str, Any]:
@@ -175,15 +213,15 @@ def validate_builder(errors: list[str]) -> None:
 
 
 def validate_public_tree(errors: list[str]) -> None:
-    for relative in (
-        "AGENTS.md",
-        ".claude/CLAUDE.md",
-        "extensions/nddev-builder/QWEN.md",
-        "setups/nddev-builder/QWEN.md",
-        "setups/nddev-builder/AGENTS.md",
-        "setups/nddev-builder/.claude/CLAUDE.md",
-    ):
+    for relative, expected in CANONICAL_INSTRUCTIONS.items():
         require_regular(relative, errors)
+        path = ROOT / relative
+        if path.exists() and not path.is_symlink() and path.is_file():
+            require(
+                path.read_bytes() == expected,
+                f"canonical instruction bytes mismatch: {relative}",
+                errors,
+            )
     for relative in (".claude", "setups/nddev-builder/.claude"):
         claude = ROOT / relative
         try:
