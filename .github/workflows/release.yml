@@ -24,8 +24,9 @@ jobs:
       version: ${{ github.ref_name }}
       package_name: nddev-qwen-code-app
       archive_paths: >-
-        README.md LICENSE VERSION CHANGELOG.md SECURITY.md .gitignore .github
-        build cli-tools config extensions references setups
+        README.md LICENSE VERSION CHANGELOG.md SECURITY.md AGENTS.md .claude
+        .gitignore .github build cli-tools config extensions profiles
+        references setups
       runtime_paths: >-
-        README.md LICENSE VERSION build cli-tools config extensions references
-        setups
+        README.md LICENSE VERSION AGENTS.md .claude build cli-tools config
+        extensions profiles references setups
