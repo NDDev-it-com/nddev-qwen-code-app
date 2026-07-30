@@ -4,9 +4,7 @@
   "release": {
     "tag": "v0.21.1",
     "published_at": "2026-07-28T17:52:26Z",
-    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.1",
-    "api_url": "https://api.github.com/repos/QwenLM/qwen-code/releases/361272312",
-    "target_commitish": "release/v0.21.1"
+    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.1"
   },
   "package": {
     "name": "@qwen-code/qwen-code",
@@ -37,10 +35,6 @@
     "sharp": "0.34.5"
   },
   "release_assets": {
-    "cli.js": {
-      "size_bytes": 12520,
-      "sha256": "978ad6207bf2eb004aec30a894a796da1e56d2470ae4a8a1839a28c4183ddcb3"
-    },
     "qwen-code-darwin-arm64.tar.gz": {
       "size_bytes": 75117454,
       "sha256": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6"
@@ -56,14 +50,6 @@
     "qwen-code-linux-x64.tar.gz": {
       "size_bytes": 82210013,
       "sha256": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c"
-    },
-    "qwen-code-win-x64.zip": {
-      "size_bytes": 62740686,
-      "sha256": "a6cdf6847e2e9259d57d18c29c2affc8929627e45681e534447816f9ea654676"
-    },
-    "SHA256SUMS": {
-      "size_bytes": 466,
-      "sha256": "3dcef600099ae00f039046347914854cb8a53e0e46158abd39e813b950d2c8c9"
     }
   },
   "standalone_archives": {

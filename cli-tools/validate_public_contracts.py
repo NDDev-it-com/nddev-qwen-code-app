@@ -128,6 +128,18 @@ def validate_versions(errors: list[str]) -> None:
         errors,
     )
     release_assets = baseline.get("release_assets", {})
+    require(
+        set(release_assets) == {f"qwen-code-{platform}.tar.gz" for platform in ARCHIVE_DIGESTS},
+        "public release asset catalog must contain only supported runtime archives",
+        errors,
+    )
+    release = baseline.get("release", {})
+    require("api_url" not in release, "release API observation must remain private", errors)
+    require(
+        "target_commitish" not in release,
+        "release target commit observation must remain private",
+        errors,
+    )
     for platform, digest in ARCHIVE_DIGESTS.items():
         asset = release_assets.get(f"qwen-code-{platform}.tar.gz", {})
         require(asset.get("sha256") == digest, f"{platform} archive digest mismatch", errors)
