@@ -60,34 +60,34 @@ METADATA_MAX_BYTES = 256 * 1024
 MANAGED_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024
 PROCESS_OUTPUT_MAX_BYTES = 256 * 1024
 PROCESS_TIMEOUT_SECONDS = 120
-TESTED_QWEN_CODE_VERSION = "0.21.1"
+TESTED_QWEN_CODE_VERSION = "0.21.2"
 QWEN_CODE_PACKAGE = "@qwen-code/qwen-code"
 QWEN_COMMAND = "qwen"
-QWEN_NPM_TARBALL_URL = "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.1.tgz"
-QWEN_NPM_TARBALL_SIZE_BYTES = 23836955
-QWEN_NPM_INTEGRITY = "sha512-UTBegRxy3Sy5PbxyVjezHb/pNp24qxrgUnq8V0cNrnlldkvI8iB3/4N3akwhEI3nAFC3Lu1cNPxIV/gIK9L3uw=="
-QWEN_NPM_SHASUM = "1d3a8426f6a4ed76ca9cd642e9adc59541973e2d"
-QWEN_RELEASE_BASE_URL = "https://github.com/QwenLM/qwen-code/releases/download/v0.21.1"
+QWEN_NPM_TARBALL_URL = "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.2.tgz"
+QWEN_NPM_TARBALL_SIZE_BYTES = 24402880
+QWEN_NPM_INTEGRITY = "sha512-7XgYqIs7CN2EtLi4diwT5gOy6MKmaIrglNq1+VSZZtbFwh1t2IrqMcyCBhKCskVy9xs6Xh5UEUCEC57fsjojeA=="
+QWEN_NPM_SHASUM = "0edc0a3bef10668e8f71710212035f6ca802978b"
+QWEN_RELEASE_BASE_URL = "https://github.com/QwenLM/qwen-code/releases/download/v0.21.2"
 QWEN_RELEASE_ARCHIVES: dict[str, dict[str, Any]] = {
     "darwin-arm64": {
         "asset": "qwen-code-darwin-arm64.tar.gz",
-        "size_bytes": 75117454,
-        "sha256": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6",
+        "size_bytes": 75639060,
+        "sha256": "73ed6e1fa43e393d26c3879449c31bd6d747e1e9cfe4b9c277a87b914fdfc81a",
     },
     "darwin-x64": {
         "asset": "qwen-code-darwin-x64.tar.gz",
-        "size_bytes": 76413403,
-        "sha256": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e",
+        "size_bytes": 76925979,
+        "sha256": "0e35d93dbe9d0b8f4079884e2172e140b52eff65582e260d9581d8713a5cc55a",
     },
     "linux-arm64": {
         "asset": "qwen-code-linux-arm64.tar.gz",
-        "size_bytes": 82000362,
-        "sha256": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454",
+        "size_bytes": 82515177,
+        "sha256": "d1ad8e72bc0bdf1e593ce9c7d22b60c76c4f078ccfcd4c74278fe196cb610a28",
     },
     "linux-x64": {
         "asset": "qwen-code-linux-x64.tar.gz",
-        "size_bytes": 82210013,
-        "sha256": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c",
+        "size_bytes": 82716024,
+        "sha256": "80556797d5fad2edea99ae2a4678a84e16faf1969a116ead4ad415e65a1449a4",
     },
 }
 CONTROLLED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"

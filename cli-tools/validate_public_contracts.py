@@ -23,20 +23,25 @@ PROFILE_POLICY = {
 MANAGED_FILES = ["settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"]
 HOSTS = ["macos-arm64", "macos-x64", "ubuntu-glibc-arm64", "ubuntu-glibc-x64"]
 ARCHIVE_DIGESTS = {
-    "darwin-arm64": "98b12dd4ffbc41c205b01724d07d502311340cd3c9b2fc5fbf6ca0dbcc0d82b6",
-    "darwin-x64": "b7696885bfb1daacbf6433309079121212d0576728745f47f98c3eabe1d5e92e",
-    "linux-arm64": "01d664ea21465bf649ce246d8328ed93b88a00d4a87d3db54a4e608b8bbaf454",
-    "linux-x64": "30fd2b411c05ec551bcba729862fc41adc0ecbe1492e956d007e3fa38349bb1c",
+    "darwin-arm64": "73ed6e1fa43e393d26c3879449c31bd6d747e1e9cfe4b9c277a87b914fdfc81a",
+    "darwin-x64": "0e35d93dbe9d0b8f4079884e2172e140b52eff65582e260d9581d8713a5cc55a",
+    "linux-arm64": "d1ad8e72bc0bdf1e593ce9c7d22b60c76c4f078ccfcd4c74278fe196cb610a28",
+    "linux-x64": "80556797d5fad2edea99ae2a4678a84e16faf1969a116ead4ad415e65a1449a4",
 }
 PLACEHOLDER_MARKER = "skele" + "ton"
 CANONICAL_INSTRUCTIONS = {
     "AGENTS.md": (
-        b"# NDDev Qwen Code Public Module\n"
+        b"# Repository instructions\n"
         b"\n"
-        b"This repository owns the public, user-runnable Qwen Code setup manager.\n"
-        b"Runtime target instructions installed by the manager are sourced from\n"
-        b"`setups/nddev-builder/QWEN.md`; native extension instructions are sourced from\n"
-        b"`extensions/nddev-builder/QWEN.md`.\n"
+        b"- Treat this clone as one independent Git mutation boundary.\n"
+        b"- Preserve unrelated branches, worktrees, submodules, and dirty changes.\n"
+        b"- Follow the repository's local documentation and source-owned contracts.\n"
+        b"- Keep secrets, credentials, runtime state, caches, logs, and generated evidence\n"
+        b"  out of version control.\n"
+        b"\n"
+        b"## Verification\n"
+        b"\n"
+        b"- Test: `python3 -m json.tool config/nddev-contract.json`.\n"
     ),
     ".claude/CLAUDE.md": b"@../AGENTS.md\n",
     "extensions/nddev-builder/QWEN.md": (
