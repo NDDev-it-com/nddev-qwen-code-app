@@ -2596,7 +2596,11 @@ def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) 
     }
     publish_cleanup_document(paths["prepare"], document)
     try:
-        path.rename(tombstone)
+        # shutil.move falls back to copy+unlink on EXDEV, which Path.rename
+        # refuses with "Invalid cross-device link" when the control root
+        # (under /tmp) and the target (under the caller's home) live on
+        # different filesystems.
+        shutil.move(str(path), str(tombstone))
         fsync_directory(path.parent)
         fsync_directory(tombstone.parent)
         publish_cleanup_document(paths["pending"], document)
@@ -2611,7 +2615,7 @@ def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) 
             return True
         if path_exists_no_follow(tombstone) and not path_exists_no_follow(path):
             with contextlib.suppress(OSError):
-                tombstone.rename(path)
+                shutil.move(str(tombstone), str(path))
                 fsync_directory(path.parent)
                 fsync_directory(tombstone.parent)
         raise
