@@ -2599,10 +2599,22 @@ def retire_path_after_commit(root: Path, target: Path, path: Path, reason: str) 
         # shutil.move falls back to copy+unlink on EXDEV, which Path.rename
         # refuses with "Invalid cross-device link" when the control root
         # (under /tmp) and the target (under the caller's home) live on
-        # different filesystems.
+        # different filesystems. A cross-device copy creates new inodes, so
+        # the pre-move snapshot (captured above for the intent record) no
+        # longer matches the tombstone. Re-snapshot the tombstone after the
+        # move and publish that as the pending document, which is the one
+        # drain_cleanup validates against.
         shutil.move(str(path), str(tombstone))
         fsync_directory(path.parent)
         fsync_directory(tombstone.parent)
+        records = snapshot_cleanup_tree(tombstone)
+        document = {
+            "schema_version": 1,
+            "product_name": PRODUCT_NAME,
+            "canonical_target": str(target),
+            "target_digest": target_digest(target),
+            "entries": [{"name": tombstone_name, "reason": reason, "records": records}],
+        }
         publish_cleanup_document(paths["pending"], document)
         fsync_directory(paths["root"])
         with contextlib.suppress(FileNotFoundError):
