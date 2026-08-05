@@ -105,8 +105,11 @@ CLEANUP_DIRECTORY_NAME = "cleanup"
 CLEANUP_PREPARE_NAME = "prepare.json"
 CLEANUP_JOURNAL_NAME = "pending.json"
 CLEANUP_TOMBSTONE_DIRECTORY = "tombstones"
-CLEANUP_MAX_TREE_ENTRIES = 2048
-CLEANUP_MAX_SERIALIZED_BYTES = 1024 * 1024
+# Cleanup snapshots can own the complete verified standalone distribution.
+# Keep their graph and journal bounds aligned with the already-enforced
+# software-tree contract instead of the much smaller managed-setup payload.
+CLEANUP_MAX_TREE_ENTRIES = SOFTWARE_TREE_MAX_PATHS
+CLEANUP_MAX_SERIALIZED_BYTES = 64 * 1024 * 1024
 RECOVERY_ROOT_SUFFIX = ".nddev-qwen-code-recovery"
 RECOVERY_MANIFEST_NAME = "manifest.json"
 RECOVERY_COMMIT_NAME = "committed.json"
