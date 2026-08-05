@@ -508,6 +508,7 @@ def require_regular_file(
     *,
     owner_only: bool = False,
     allow_hardlinks: bool = False,
+    max_bytes: int = MANAGED_PAYLOAD_MAX_BYTES,
 ) -> os.stat_result:
     try:
         info = path.lstat()
@@ -519,8 +520,8 @@ def require_regular_file(
         fail(f"{label} must not have hard-link aliases")
     if owner_only and not is_owner_only_file(info):
         fail(f"{label} must be owned by the current user with mode 0600")
-    if info.st_size > MANAGED_PAYLOAD_MAX_BYTES:
-        fail(f"{label} exceeds the {MANAGED_PAYLOAD_MAX_BYTES}-byte size limit")
+    if info.st_size > max_bytes:
+        fail(f"{label} exceeds the {max_bytes}-byte size limit")
     return info
 
 
@@ -1335,6 +1336,7 @@ def read_regular_file(
         label,
         owner_only=owner_only,
         allow_hardlinks=allow_hardlinks,
+        max_bytes=max_bytes,
     )
     if before.st_size > max_bytes:
         fail(f"{label} exceeds the {max_bytes}-byte size limit")
@@ -1370,6 +1372,7 @@ def read_regular_file(
         label,
         owner_only=owner_only,
         allow_hardlinks=allow_hardlinks,
+        max_bytes=max_bytes,
     )
     if identity_of(after) != identity_of(before) or identity_of(final) != identity_of(before):
         fail_concurrent(f"{label} changed while it was being read")
@@ -2200,7 +2203,12 @@ def cleanup_tree_record(path: Path, base: Path, counter: dict[str, int]) -> dict
     if stat.S_ISREG(info.st_mode):
         if info.st_nlink != 1:
             fail("cleanup source file must not have hard-link aliases")
-        content, reopened = read_regular_file(path, f"cleanup source {relative}", owner_only=False)
+        content, reopened = read_regular_file(
+            path,
+            f"cleanup source {relative}",
+            owner_only=False,
+            max_bytes=SOFTWARE_TREE_MAX_BYTES,
+        )
         if identity_of(reopened) != identity_of(info):
             fail_concurrent(f"cleanup source changed during snapshot: {path}")
         common.update({"type": "file", "sha256": sha256_bytes(content)})
@@ -2337,7 +2345,11 @@ def validate_cleanup_object(
             fail(f"cleanup tombstone file metadata changed: {record['path']}")
         if info.st_mtime_ns != record["mtime_ns"]:
             fail(f"cleanup tombstone file mtime changed: {record['path']}")
-        content, reopened = read_regular_file(path, f"cleanup tombstone file {record['path']}")
+        content, reopened = read_regular_file(
+            path,
+            f"cleanup tombstone file {record['path']}",
+            max_bytes=SOFTWARE_TREE_MAX_BYTES,
+        )
         if identity_of(reopened) != identity_of(info):
             fail_concurrent(f"cleanup tombstone file changed while being read: {record['path']}")
         if sha256_bytes(content) != record["sha256"]:
