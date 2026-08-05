@@ -2386,22 +2386,11 @@ def drain_tombstone_entry(tombstone: Path, entry: dict[str, Any]) -> None:
             continue
         if record["type"] == "directory":
             current_children = sorted(child.name for child in path.iterdir())
-            declared_children: set[str] = set()
-            directory_relative = Path(relative)
-            for name in declared:
-                if name == ".":
-                    continue
-                candidate = Path(name)
-                if relative == ".":
-                    if len(candidate.parts) == 1:
-                        declared_children.add(candidate.parts[0])
-                    continue
-                try:
-                    remainder = candidate.relative_to(directory_relative)
-                except ValueError:
-                    continue
-                if len(remainder.parts) == 1:
-                    declared_children.add(remainder.parts[0])
+            # The canonical snapshot already records every direct child and
+            # its schema validation requires a sorted unique string list.
+            # Reuse that bounded evidence instead of rescanning the complete
+            # declared graph for every directory (quadratic on vendor trees).
+            declared_children = set(record["children"])
             if any(child not in declared_children for child in current_children):
                 fail(f"cleanup tombstone directory contains unknown children: {relative}")
             validate_cleanup_object(path, record, deleting_directory=True)
