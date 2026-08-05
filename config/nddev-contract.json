@@ -51,9 +51,9 @@
   "runtime_compatibility": {
     "baseline_ref": "references/qwen-code-baseline.json",
     "version_ref": "build/version.json",
-    "tested_version": "0.21.5",
+    "tested_version": "0.21.6",
     "package": "@qwen-code/qwen-code",
-    "release_tag": "v0.21.5",
+    "release_tag": "v0.21.6",
     "documentation": [
       "docs/users/configuration/settings.md",
       "docs/users/features/approval-mode.md",
@@ -101,7 +101,7 @@
     "target_must_equal_qwen_home": true
   },
   "software_install": {
-    "tested_version": "0.21.5",
+    "tested_version": "0.21.6",
     "node_requires": ">=22.0.0",
     "supported_hosts": [
       "macos-arm64",
@@ -119,14 +119,14 @@
     "vendor_platforms": ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"],
     "package_provenance": {
       "name": "@qwen-code/qwen-code",
-      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.5.tgz",
-      "tarball_size_bytes": 24615052,
-      "integrity": "sha512-m3cKT8i+bcEjtzWWImgv4oReMSMuxPecvoKGkg5ciS4xlKGuJOHNAROA68Di5mSwMOorACqTjb8jJVaQusudhg==",
-      "shasum": "52a8e06be43cb623844db10ee38828f9dee0038b",
+      "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.6.tgz",
+      "tarball_size_bytes": 24695893,
+      "integrity": "sha512-sA5dcdH03ilVH5Ze/oREJHuUlYF9b2fn2rucWWqnvC5Q7i/t9iY0rSRe32UXZquPFuo9V2DVDodEOUFqChz9kA==",
+      "shasum": "dfec831223258d34f9d4ceb88d959120dd792e9d",
       "scripts_enabled": false
     },
     "release_archive": {
-      "base_url": "https://github.com/QwenLM/qwen-code/releases/download/v0.21.5",
+      "base_url": "https://github.com/QwenLM/qwen-code/releases/download/v0.21.6",
       "verification": "pinned-size-sha256",
       "materialization": "manager-owned-safe-extract-no-scripts"
     },

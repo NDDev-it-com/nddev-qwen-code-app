@@ -23,10 +23,10 @@ PROFILE_POLICY = {
 MANAGED_FILES = ["settings.json", "QWEN.md", "AGENTS.md", ".claude/CLAUDE.md"]
 HOSTS = ["macos-arm64", "macos-x64", "ubuntu-glibc-arm64", "ubuntu-glibc-x64"]
 ARCHIVE_DIGESTS = {
-    "darwin-arm64": "5b6613466ec80327701bc10a239a118483ae918d5169272059075e6545c0f411",
-    "darwin-x64": "ee5a5eec7850152e9954c41c0e951582234f009ed970ef56b54ae5b2b109860b",
-    "linux-arm64": "5dbee9d8fecea77b54963c940097f30956ec0fad0781fda856cf32a8d4c24ee5",
-    "linux-x64": "9b05b7913599164903e04129c6ffe7f1267647fa6bff7cdeab3e7133beacb6a4",
+    "darwin-arm64": "1799fe51e7fe446b3898955880928c2ebe8251f6655056975eb756c9e3884605",
+    "darwin-x64": "b624b4cac6e215cea9f1fc8ed41dec590b3c9176d392b7a38a5294db048e75af",
+    "linux-arm64": "8a890a4829249ab20981db8fc4548bfdfff483743fc66ffbb90b691e0a526680",
+    "linux-x64": "a784dc89cf06900d7948a32085f94bebceda735c4c9c4cac57c0f69874beb9a0",
 }
 PLACEHOLDER_MARKER = "skele" + "ton"
 CANONICAL_INSTRUCTIONS = {
