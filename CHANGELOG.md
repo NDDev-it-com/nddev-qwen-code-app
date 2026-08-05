@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.1.1] - 2026-08-05
+
+- Update Qwen Code from `0.21.2` to stable `0.21.5` with exact npm and
+  supported standalone-archive identities.
+- Re-verify the Node requirement, optional native packages, release assets,
+  and launch-scope grammar; upstream reports no breaking changes.
+
 ## [0.1.0] - 2026-07-26
 
 - Split Qwen Code content setup identity from runtime approval profiles.

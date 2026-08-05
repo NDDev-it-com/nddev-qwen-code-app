@@ -6,7 +6,7 @@ absolute target, applies a selected runtime profile, and preserves unrelated
 authentication, model-provider, MCP, and runtime state.
 
 This build targets the canonical Qwen Code CLI from `QwenLM/qwen-code`, package
-identity `@qwen-code/qwen-code`, binary `qwen`, version `0.21.2`.
+identity `@qwen-code/qwen-code`, binary `qwen`, version `0.21.5`.
 
 ## Owned state
 
@@ -117,7 +117,7 @@ ambient `PATH`; it executes `<target>/bin/qwen` with target-owned
 directories, and it passes an explicit project cwd from `--workspace` or the
 captured caller cwd. Explicit workspaces must be absolute literal paths to
 existing accessible non-symlink directories; `~/...` expansion is rejected.
-Qwen Code 0.21.2 does not provide a top-level native primary workspace flag for
+Qwen Code 0.21.5 does not provide a top-level native primary workspace flag for
 normal launch. The official `serve --workspace`, `channel pairing ... --cwd`,
 normal-launch `--include-directories/--add-dir`, and `--worktree` scope
 controls, including yargs camelCase spelling for those multiword options, are
