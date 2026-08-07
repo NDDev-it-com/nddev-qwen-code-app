@@ -2,19 +2,19 @@
   "schema_version": 1,
   "source": "QwenLM/qwen-code",
   "release": {
-    "tag": "v0.21.6",
-    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.6"
+    "tag": "v0.21.7",
+    "url": "https://github.com/QwenLM/qwen-code/releases/tag/v0.21.7"
   },
   "package": {
     "name": "@qwen-code/qwen-code",
-    "version": "0.21.6",
+    "version": "0.21.7",
     "binary": "qwen",
     "node_requires": ">=22.0.0",
-    "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.6.tgz",
-    "tarball_size_bytes": 24695893,
-    "integrity": "sha512-sA5dcdH03ilVH5Ze/oREJHuUlYF9b2fn2rucWWqnvC5Q7i/t9iY0rSRe32UXZquPFuo9V2DVDodEOUFqChz9kA==",
-    "shasum": "dfec831223258d34f9d4ceb88d959120dd792e9d",
-    "git_head": "ed1ae7d1256d635b9bfa9d68c54e589f918b2097"
+    "tarball": "https://registry.npmjs.org/@qwen-code/qwen-code/-/qwen-code-0.21.7.tgz",
+    "tarball_size_bytes": 24729811,
+    "integrity": "sha512-W2x8NmgMlPpMrZ1odRgEDiHH/bckrXtryCz1KnttwseDMpOLVTaM8Puo1UW5dxNv5davdhURupb6uVdqKVI7og==",
+    "shasum": "22cb873eaa8040040ab5ba3c12d5a673de62ed4c",
+    "git_head": "0639ef7242006e0c2316fa29fe1077c315effc22"
   },
   "npm_optional_dependencies": {
     "@lydell/node-pty": "1.2.0-beta.10",
@@ -23,7 +23,7 @@
     "@lydell/node-pty-linux-x64": "1.2.0-beta.10",
     "@lydell/node-pty-win32-arm64": "1.2.0-beta.10",
     "@lydell/node-pty-win32-x64": "1.2.0-beta.10",
-    "@qwen-code/audio-capture": "0.21.6",
+    "@qwen-code/audio-capture": "0.21.7",
     "@teddyzhu/clipboard": "0.0.5",
     "@teddyzhu/clipboard-darwin-arm64": "0.0.5",
     "@teddyzhu/clipboard-darwin-x64": "0.0.5",
@@ -35,27 +35,27 @@
   },
   "release_assets": {
     "qwen-code-darwin-arm64.tar.gz": {
-      "size_bytes": 75995153,
-      "sha256": "1799fe51e7fe446b3898955880928c2ebe8251f6655056975eb756c9e3884605"
+      "size_bytes": 76014365,
+      "sha256": "f861d79e64a1422bd52b41ad7773a125841346895f8712d8065ad74c0b3c64c4"
     },
     "qwen-code-darwin-x64.tar.gz": {
-      "size_bytes": 77279926,
-      "sha256": "b624b4cac6e215cea9f1fc8ed41dec590b3c9176d392b7a38a5294db048e75af"
+      "size_bytes": 77305058,
+      "sha256": "415fddc70c7e4af75cca46b6be1f7ecccea8104753c10b0a1ae80dfb0cf03244"
     },
     "qwen-code-linux-arm64.tar.gz": {
-      "size_bytes": 82872194,
-      "sha256": "8a890a4829249ab20981db8fc4548bfdfff483743fc66ffbb90b691e0a526680"
+      "size_bytes": 82892390,
+      "sha256": "50756ecc878627b01b54c94b54913e5a9dc3061dc2e5ec1b0b6fc6cdd4094c85"
     },
     "qwen-code-linux-x64.tar.gz": {
-      "size_bytes": 83078560,
-      "sha256": "a784dc89cf06900d7948a32085f94bebceda735c4c9c4cac57c0f69874beb9a0"
+      "size_bytes": 83100946,
+      "sha256": "21a60b0b9d13a90b75e151d17223e6db755ed4f3bf5d04c7942aa8d7b769a4d2"
     }
   },
   "standalone_archives": {
-    "darwin-arm64": "1799fe51e7fe446b3898955880928c2ebe8251f6655056975eb756c9e3884605",
-    "darwin-x64": "b624b4cac6e215cea9f1fc8ed41dec590b3c9176d392b7a38a5294db048e75af",
-    "linux-arm64": "8a890a4829249ab20981db8fc4548bfdfff483743fc66ffbb90b691e0a526680",
-    "linux-x64": "a784dc89cf06900d7948a32085f94bebceda735c4c9c4cac57c0f69874beb9a0"
+    "darwin-arm64": "f861d79e64a1422bd52b41ad7773a125841346895f8712d8065ad74c0b3c64c4",
+    "darwin-x64": "415fddc70c7e4af75cca46b6be1f7ecccea8104753c10b0a1ae80dfb0cf03244",
+    "linux-arm64": "50756ecc878627b01b54c94b54913e5a9dc3061dc2e5ec1b0b6fc6cdd4094c85",
+    "linux-x64": "21a60b0b9d13a90b75e151d17223e6db755ed4f3bf5d04c7942aa8d7b769a4d2"
   },
   "product_hosts": {
     "supported": [
@@ -90,7 +90,7 @@
     "extension_manifest": "qwen-extension.json"
   },
   "launch_scope_grammar": {
-    "source": "Official @qwen-code/qwen-code 0.21.6 package: cli.js top-level help parser and bundled command parsers.",
+    "source": "Official @qwen-code/qwen-code 0.21.7 package: cli.js top-level help parser and bundled command parsers.",
     "normal_launch_primary_workspace_flag": null,
     "normal_launch_cwd_flag": null,
     "normal_launch_project_flag": null,

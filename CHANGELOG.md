@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [0.1.3] - 2026-08-08
+
+- Update Qwen Code from `0.21.6` to stable `0.21.7` with exact npm package
+  identity and all four supported standalone archive identities.
+- Revalidate the unchanged Node floor, entrypoint, optional native dependency
+  model, and launch-scope grammar. Upstream reports no known breaking changes
+  and adds review context, terminal images, sandbox probing, and symlink-safe
+  permissions.
+
 ## [0.1.2] - 2026-08-06
 
 - Update Qwen Code from `0.21.5` to stable `0.21.6` with exact npm package
