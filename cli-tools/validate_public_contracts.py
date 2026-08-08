@@ -33,6 +33,13 @@ CANONICAL_INSTRUCTIONS = {
     "AGENTS.md": (
         b"# Repository instructions\n"
         b"\n"
+        b"## Development status: ON PAUSE\n"
+        b"\n"
+        b"Do not begin feature work, vendor updates, refactoring, releases, issue/PR\n"
+        b"implementation, or repository workflow dispatches here. Resume module-specific\n"
+        b"work only when the owner explicitly names this repository and directs its\n"
+        b"reactivation. Read-only integrity inspection remains allowed.\n"
+        b"\n"
         b"- Treat this clone as one independent Git mutation boundary.\n"
         b"- Preserve unrelated branches, worktrees, submodules, and dirty changes.\n"
         b"- Follow the repository's local documentation and source-owned contracts.\n"
